@@ -1,0 +1,447 @@
+/* =================================
+   RHYTHM - MAIN DESIGN
+================================= */
+
+:root {
+    --bg: #090812;
+    --panel: #17152a;
+    --panel2: #201b38;
+    --line: #373052;
+    --text: #f5f1ff;
+    --muted: #aaa2c5;
+    --accent: #a78bfa;
+    --pink: #ed64bd;
+    --cyan: #22d3ee;
+    --green: #34d399;
+    --gold: #fbbf24;
+    --red: #fb7185;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background:
+        radial-gradient(ellipse at 50% 0%, #32134a 0%, transparent 55%),
+        var(--bg);
+    color: var(--text);
+    font-family: Arial, Helvetica, sans-serif;
+    min-height: 100vh;
+}
+
+button, input, select, textarea {
+    font: inherit;
+}
+
+button {
+    cursor: pointer;
+}
+
+a {
+    color: var(--cyan);
+    cursor: pointer;
+    text-decoration: none;
+}
+
+/* =================================
+   LOGIN / REGISTRATION
+================================= */
+
+.center {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 35px 18px;
+}
+
+.hero {
+    text-align: center;
+    max-width: 650px;
+    margin-bottom: 30px;
+}
+
+.logo {
+    font-size: clamp(42px, 7vw, 65px);
+    font-weight: 900;
+    letter-spacing: 2px;
+    background: linear-gradient(90deg, #a78bfa, #f472b6);
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+}
+
+.tagline {
+    font-size: 19px;
+    color: #d8c9f5;
+}
+
+.small {
+    font-size: 13px;
+}
+
+.dim, .muted {
+    color: var(--muted);
+}
+
+.card {
+    background: rgba(27, 24, 48, .92);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.25);
+}
+
+.center > .card {
+    width: 100%;
+    max-width: 590px;
+}
+
+label {
+    display: block;
+    margin: 15px 0 7px;
+    font-size: 14px;
+    color: #d7ccec;
+}
+
+input, select, textarea {
+    width: 100%;
+    padding: 13px;
+    color: white;
+    background: #100e20;
+    border: 1px solid #393255;
+    border-radius: 11px;
+    outline: none;
+    margin-bottom: 8px;
+}
+
+input:focus, select:focus, textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(167,139,250,.13);
+}
+
+select option {
+    background: #17152a;
+}
+
+textarea {
+    resize: vertical;
+    min-height: 100px;
+}
+
+/* =================================
+   BUTTONS
+================================= */
+
+.btn {
+    border: 0;
+    padding: 13px 22px;
+    border-radius: 12px;
+    font-weight: bold;
+    color: white;
+    background: linear-gradient(100deg, #a78bfa, #ec64bd);
+    transition: .2s;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.12);
+}
+
+.btn.ghost {
+    background: transparent;
+    border: 1px solid var(--line);
+}
+
+.btn.small {
+    padding: 9px 13px;
+}
+
+.grow {
+    flex: 1;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.domPick {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+}
+
+.domPick label {
+    padding: 10px 13px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+.domPick label.sel {
+    background: #573c80;
+    border-color: var(--accent);
+}
+
+.domPick input {
+    width: auto;
+    margin: 0 6px 0 0;
+}
+
+/* =================================
+   NAVIGATION
+================================= */
+
+.topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: rgba(13, 11, 25, .95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+}
+
+.topbarIn {
+    max-width: 1200px;
+    margin: auto;
+    padding: 13px 18px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.brand {
+    font-size: 23px;
+    font-weight: 900;
+    cursor: pointer;
+    background: linear-gradient(90deg, #a78bfa, #f472b6);
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+}
+
+.wrap {
+    max-width: 1150px;
+    margin: auto;
+    padding: 22px 18px;
+}
+
+.tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 24px;
+}
+
+.tabs button {
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 11px 15px;
+}
+
+.tabs button:hover,
+.tabs button.on {
+    color: white;
+    background: linear-gradient(100deg, #6747a1, #9c438c);
+    border-color: var(--accent);
+}
+
+/* =================================
+   CONTENT CARDS
+================================= */
+
+.post, .panel, .workspace, .auction {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 19px;
+    margin-bottom: 17px;
+}
+
+.post h3 {
+    color: white;
+}
+
+.postHead {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.pmeta {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 5px;
+}
+
+.ava {
+    width: 43px;
+    height: 43px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: white;
+    font-weight: bold;
+    flex-shrink: 0;
+}
+
+.badge {
+    display: inline-block;
+    padding: 5px 9px;
+    margin: 3px;
+    border-radius: 20px;
+    background: #302849;
+    color: #d9c7ff;
+    font-size: 11px;
+}
+
+.badge.green {
+    color: var(--green);
+}
+
+.badge.gold {
+    color: var(--gold);
+}
+
+.lyricsBox {
+    white-space: pre-wrap;
+    background: #100e20;
+    border-left: 3px solid var(--pink);
+    padding: 15px;
+    border-radius: 8px;
+    margin: 12px 0;
+    line-height: 1.7;
+}
+
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.chip {
+    padding: 8px 12px;
+    color: #ded6f5;
+    background: #28223e;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+}
+
+.chip:hover, .chip.votedUp {
+    background: #315c50;
+    border-color: var(--green);
+}
+
+.chip.votedDown {
+    background: #643143;
+    border-color: var(--red);
+}
+
+/* =================================
+   GENERAL LAYOUT
+================================= */
+
+h1, h2, h3 {
+    color: #f5eaff;
+}
+
+hr {
+    border: 0;
+    border-top: 1px solid var(--line);
+    margin: 20px 0;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--line);
+}
+
+th {
+    color: var(--accent);
+}
+
+.modal {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: rgba(0,0,0,.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 15px;
+    overflow-y: auto;
+}
+
+.toast {
+    position: fixed;
+    bottom: 25px;
+    right: 25px;
+    z-index: 100;
+    background: #302849;
+    border: 1px solid var(--accent);
+    padding: 14px 20px;
+    border-radius: 12px;
+    box-shadow: 0 8px 30px #0008;
+}
+
+/* =================================
+   RESPONSIVE DESIGN
+================================= */
+
+@media(max-width:650px) {
+
+    .grid2 {
+        grid-template-columns: 1fr;
+    }
+
+    .wrap {
+        padding: 14px 10px;
+    }
+
+    .card {
+        padding: 17px;
+    }
+
+    .tabs {
+        gap: 5px;
+    }
+
+    .tabs button {
+        padding: 9px;
+        font-size: 12px;
+    }
+
+    .hidem {
+        display: none;
+    }
+
+    .topbarIn {
+        padding: 10px;
+    }
+
+    .actions {
+        gap: 5px;
+    }
+}
