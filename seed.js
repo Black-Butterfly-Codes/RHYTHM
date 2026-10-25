@@ -113,5 +113,13 @@ export function seedDB() {
   const transactions = [];
   const commissionPct = 5;
 
+  for (const u of users) { u.favs = []; u.following = []; u.playlists = []; }
+  // demo social graph: a few follows + likes so Creators/Dashboard feel alive
+  const byName = (n) => users.find((u) => u.username === n).id;
+  users.find((u) => u.username === "rahulmusic").following = [byName("amankeys"), byName("priyasings")];
+  users.find((u) => u.username === "amankeys").following = [byName("rahulmusic")];
+  users.find((u) => u.username === "arjunbeats").favs = [posts[0].id, posts[4].id];
+  users.find((u) => u.username === "rahulmusic").playlists = [{ id: uid("pl"), name: "Late night writing", postIds: [posts[5].id, posts[6].id] }];
+
   return { users, posts, collabRequests, projects, threads, auctions, notifications, reports, transactions, commissionPct };
 }
