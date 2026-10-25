@@ -2,9 +2,12 @@
 
 ### Discover Talent. Create Together. Rise Together.
 
-**RHYTHM** is a collaborative music creation platform concept designed to bring independent artists together. It gives singers, instrumentalists, lyricists, composers, and beatmakers a space to showcase their creativity, discover emerging talent, and explore musical collaborations.
+![MIT License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Contributions Welcome](https://img.shields.io/badge/Contributions-Welcome-brightgreen.svg)
+![Project Status](https://img.shields.io/badge/Status-Prototype-orange.svg)
+![Built with JavaScript](https://img.shields.io/badge/Built%20with-JavaScript-yellow.svg)
 
-The goal is to build a community where independent creators can connect, collaborate, and grow together.
+**RHYTHM** is a collaborative music creation platform concept designed to bring independent artists together.
 
 ## 🌐 Project Links
 
