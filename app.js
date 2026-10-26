@@ -2,6 +2,7 @@
 import { loadDB, saveDB, wipeDB, getSession, setSession, sha256, uid } from "./store.js";
 import { seedDB, REGIONS, DOMAINS, DOMAIN_LABEL, GENRES, LANGUAGES } from "./seed.js";
 import { togglePreview, isPlaying, stopPreview, setVolume, getVolume, currentTrack } from "./audio.js";
+import { initAnalytics, trackPage } from "./analytics.js";
 
 const DAY = 86400000;
 const PERIODS = { week: 7 * DAY, month: 30 * DAY, year: 365 * DAY, all: Infinity };
@@ -45,6 +46,14 @@ export async function boot() {
   if (ME && !DB.users.some((u) => u.id === ME)) { ME = null; setSession(null); }
   B.state = myState();
   setVolume(VOL);
+  routeHash(); // honour #/tab or #/post-ID deep links on load
+  window.addEventListener("hashchange", () => {
+    if (HASH_GUARD) return;
+    const scrolled = routeHash();
+    render();
+    if (scrolled) setTimeout(() => { const el = document.getElementById("post-" + EXPANDED); if (el) el.scrollIntoView({ block: "center" }); }, 60);
+  });
+  initAnalytics();
   render();
   setInterval(tickCountdowns, 1000);
   setInterval(updatePlayerUI, 500);
@@ -72,7 +81,8 @@ function avaColor(name) {
   return `linear-gradient(135deg,hsl(${h},70%,60%),hsl(${(h + 60) % 360},70%,50%))`;
 }
 function ava(name, sz) {
-  return `<div class="avatar" style="background:${avaColor(name || "?")};${sz ? `width:${sz}px;height:${sz}px;` : ""}">${esc((name || "?").trim()[0].toUpperCase())}</div>`;
+  const label = "Avatar of " + (name || "deleted user");
+  return `<div class="avatar" role="img" aria-label="${esc(label)}" style="background:${avaColor(name || "?")};${sz ? `width:${sz}px;height:${sz}px;` : ""}">${esc((name || "?").trim()[0].toUpperCase())}</div>`;
 }
 // ---- premium helpers (views only; logic untouched) ----
 const DOMAIN_EMOJI = { singer: "🎤", instrumentalist: "🎸", lyricist: "✍️", composer: "🎼", beatmaker: "🥁" };
@@ -82,7 +92,8 @@ function artStyle(seedStr) {
   return `background:linear-gradient(135deg,hsl(${h},80%,48%),hsl(${(h + 70) % 360},85%,33%),hsl(${(h + 140) % 360},90%,26%))`;
 }
 function artHtml(p) {
-  return `<div class="art" style="${artStyle(p.audioSeed || p.id)}"><span class="em">${DOMAIN_EMOJI[p.domain] || "🎵"}</span></div>`;
+  const label = "Artwork for " + (p.title || DOMAIN_LABEL[p.domain] || "track");
+  return `<div class="art" role="img" aria-label="${esc(label)}" style="${artStyle(p.audioSeed || p.id)}"><span class="em" aria-hidden="true">${DOMAIN_EMOJI[p.domain] || "🎵"}</span></div>`;
 }
 function followersOf(id) { return DB.users.filter((u) => (u.following || []).includes(id)).length; }
 function fmtT(s) { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
@@ -109,6 +120,74 @@ function updatePlayerUI() {
   const pct = t.dur ? (t.elapsed / t.dur * 100) : 0;
   fill.style.width = pct + "%";
   if (tm) tm.textContent = fmtT(t.elapsed) + " / " + fmtT(t.dur);
+}
+
+// ---- SEO: per-screen titles/descriptions, canonical, robots, hash routes ----
+const CONTACT_EMAIL = ""; // TODO(owner): set support inbox, e.g. "hello@example.com". See src/CONTACT.md.
+
+const SEO_META = {
+  auth: ["Sign in | RHYTHM", "Sign in to RHYTHM and join singers, instrumentalists, lyricists, composers and beatmakers creating together."],
+  dash: ["Creator Dashboard | RHYTHM", "Your RHYTHM home: stats, engagement, collaborations, trending tracks, playlists and alerts."],
+  home: ["Discover Music | RHYTHM", "Discover trending tracks, featured creators and fresh uploads from independent artists on RHYTHM."],
+  creators: ["Explore Creators | RHYTHM", "Find singers, instrumentalists, lyricists, composers and beatmakers to follow and collaborate with."],
+  explore: ["Explore Tracks | RHYTHM", "Search RHYTHM tracks by domain, genre, language, state and collaboration availability."],
+  boards: ["Leaderboards | RHYTHM", "State and national rankings for every creative domain, updated weekly, monthly, yearly and all-time."],
+  collabs: ["Collaborations | RHYTHM", "Manage collaboration requests and creative workspaces with fellow musicians."],
+  auctions: ["Marketplace | RHYTHM", "Bid on original lyrics, beats and compositions, or auction your own work with documented licenses."],
+  msgs: ["Messages | RHYTHM", "Private chats with collaborators and artists on RHYTHM."],
+  notifs: ["Notifications | RHYTHM", "Votes, comments, collaboration updates, leaderboard moves and auction alerts."],
+  profile: ["Profile | RHYTHM", "Creator profile: portfolio, stats, achievements, followers and collaboration options."],
+  admin: ["Admin | RHYTHM", "Platform moderation dashboard."],
+  privacy: ["Privacy Policy | RHYTHM", "How RHYTHM handles your account data, content and local storage in this prototype build."],
+  contact: ["Contact Us | RHYTHM", "Get in touch with the RHYTHM team: questions, feedback and support."],
+};
+
+function applySeo() {
+  const pub = !ME && (TAB === "privacy" || TAB === "contact");
+  const key = !ME ? (pub ? TAB : "auth") : (SEO_META[TAB] ? TAB : "dash");
+  const [t, d] = SEO_META[key];
+  document.title = t;
+  let m = document.querySelector('meta[name="description"]');
+  if (!m) { m = document.createElement("meta"); m.setAttribute("name", "description"); document.head.appendChild(m); }
+  m.setAttribute("content", d);
+  const canon = location.origin + location.pathname + (TAB === "privacy" || TAB === "contact" ? "#/" + TAB : "");
+  let c = document.querySelector('link[rel="canonical"]');
+  if (!c) { c = document.createElement("link"); c.setAttribute("rel", "canonical"); document.head.appendChild(c); }
+  c.setAttribute("href", canon);
+  // App screens are private per-user state: keep them out of indexes. Public
+  // pages (privacy/contact, logged out) stay indexable.
+  let r = document.querySelector('meta[name="robots"]');
+  if (!pub) {
+    if (!r) { r = document.createElement("meta"); r.setAttribute("name", "robots"); document.head.appendChild(r); }
+    r.setAttribute("content", "noindex, nofollow");
+  } else if (r) r.remove();
+  trackPage(key);
+}
+
+let HASH_GUARD = false;
+function setHash(h) {
+  if (location.hash === h) return;
+  HASH_GUARD = true;
+  location.hash = h;
+  setTimeout(() => { HASH_GUARD = false; }, 80);
+}
+/** Parse location.hash into TAB/EXPANDED state. Never renders by itself. */
+function routeHash() {
+  const h = location.hash || "";
+  const mPost = h.match(/^#\/post-(.+)$/);
+  if (mPost) {
+    const p = postById(mPost[1]);
+    if (p && ME) { TAB = "home"; EXPANDED = p.id; VIEW_USER = null; }
+    else if (!ME) { TAB = "home"; EXPANDED = null; }
+    return Boolean(p && ME);
+  }
+  const mTab = h.match(/^#\/([a-z]+)$/);
+  if (mTab) {
+    const t = mTab[1];
+    if (t === "privacy" || t === "contact") { TAB = t; return false; }
+    if (ME && SEO_META[t]) TAB = t;
+  }
+  return false;
 }
 function toast(msg) {
   const t = document.createElement("div");
@@ -186,8 +265,10 @@ function tickCountdowns() {
 function render(keepScroll) {
   const y = keepScroll ? window.scrollY : 0;
   const c = document.getElementById("bootCtn");
-  c.innerHTML = ME ? appView() : authView();
+  const pub = !ME && (TAB === "privacy" || TAB === "contact");
+  c.innerHTML = ME ? appView() : (pub ? publicView() : authView());
   if (ME) tickCountdowns();
+  applySeo();
   window.scrollTo(0, keepScroll ? y : 0);
 }
 
@@ -224,7 +305,97 @@ function authView() {
       <label>Primary domain (your main ranking)</label><select id="suPrimaryInput">${SIGNUP_DOMAINS.map((d) => `<option value="${d}">${DOMAIN_LABEL[d]}</option>`).join("")}</select>
       <label>Bio</label><input id="suBioInput" placeholder="Short intro…">
       <div class="row" style="margin-top:14px"><button class="btn grow" onclick="R.signup()">Create account →</button></div>`}
-    </div></div>${MODAL ? modalHtml() : ""}`;
+    </div>${footLinks()}</div>${MODAL ? modalHtml() : ""}`;
+}
+
+// ----- public shell, footer, privacy & contact (crawlable, no login needed) -----
+function footLinks() {
+  const pub = !ME;
+  const goTab = (t, label) => pub && !["privacy", "contact"].includes(t)
+    ? `<a onclick="R.go('__signin')">${label}</a>`
+    : `<a onclick="R.nav('${t}')">${label}</a>`;
+  return `<div class="foot"><span>© RHYTHM · Discover Talent. Create Together. Rise Together.</span><span class="grow"></span>
+    <a onclick="R.nav('privacy')">Privacy Policy</a><a onclick="R.nav('contact')">Contact</a>
+    ${goTab("home", "Discover")}${goTab("creators", "Creators")}${goTab("boards", "Leaderboards")}
+    <a href="https://github.com/Black-Butterfly-Codes/RHYTHM" target="_blank" rel="noopener">GitHub</a></div>`;
+}
+// '__signin' pseudo-target: logged-out users land on the sign-in screen.
+function publicView() {
+  const body = TAB === "contact" ? contactView() : privacyView();
+  return `<div class="authWrap" style="max-width:720px">
+    <div class="authLogo"><div class="mark">♪</div><h1 style="letter-spacing:.18em;margin:14px 0 2px;font-size:22px">RHYTHM</h1>
+    <p class="muted small">Discover Talent. Create Together. Rise Together.</p></div>
+    <div class="row" style="justify-content:center;margin-bottom:6px">
+      <button class="btn small ghost" onclick="R.nav('privacy')">Privacy</button>
+      <button class="btn small ghost" onclick="R.nav('contact')">Contact</button>
+      <button class="btn small" onclick="R.go('__signin')">Sign in / Join →</button>
+    </div>${body}${footLinks()}</div>${MODAL ? modalHtml() : ""}`;
+}
+function crumbs(items) {
+  return `<nav class="crumbs" aria-label="Breadcrumb">${items.map((it, i) =>
+    i < items.length - 1 ? `<a onclick="R.nav('${it[1]}')">${esc(it[0])}</a><span aria-hidden="true">›</span>`
+    : `<span aria-current="page">${esc(it[0])}</span>`).join("")}</nav>`;
+}
+function privacyView() {
+  return `${ME ? crumbs([["Dashboard", "dash"], ["Privacy Policy", ""]]) : crumbs([["RHYTHM", "privacy"], ["Privacy Policy", ""]])}
+  <div class="glass"><h2 style="margin-top:0">Privacy Policy</h2>
+  <p class="small dim">Last updated: October 2026 · Prototype build. This policy describes what this demo actually does — not a future production system.</p>
+  <h3>1. What this app is</h3>
+  <p class="small">RHYTHM is currently a <b>client-side prototype</b>: all data lives in your own browser's local storage on your device. There is no RHYTHM server, no cloud database, and nothing is transmitted anywhere over the network by the app itself.</p>
+  <h3>2. Information you provide</h3>
+  <p class="small">When you sign up you enter a name, username, email, password, date of birth, state/city and bio. When you use the app you create posts (lyrics, track metadata), votes, comments, collaboration messages, bids and auction listings. All of it is stored locally in your browser.</p>
+  <h3>3. Passwords & sessions</h3>
+  <p class="small">Passwords are stored only as salted SHA-256 hashes (demo-grade; production will use Argon2id). Sessions persist in local storage until you log out. Five failed logins trigger a 60-second lockout. See <b>src/docs/AUTH.md</b> in the project repo.</p>
+  <h3>4. Cookies & local storage</h3>
+  <p class="small">The app uses local storage keys for the database, your session and login-attempt limits. It sets no third-party cookies. Analytics is included in the code but <b>disabled until the owner configures a measurement ID</b> — with the default build, no analytics requests are made.</p>
+  <h3>5. Sharing & third parties</h3>
+  <p class="small">None. Your data never leaves your device through this app. Share links you copy contain only a track reference. If you contact support by email, your message goes to that inbox under that provider's policy.</p>
+  <h3>6. Retention & deletion</h3>
+  <p class="small">Data persists until you clear browser storage, use “Reset demo data”, or delete your account (Profile → Delete my account), which purges your posts, votes, chats, listings and profile from this device.</p>
+  <h3>7. Security limitations (read carefully)</h3>
+  <p class="small">Browser local storage is <b>not encrypted</b> and is readable by any script running on the same origin, so this prototype must not hold sensitive personal data. Production hosting will add TLS, server-side auth, encrypted storage and backups (see <b>src/docs/DATA_SECURITY.md</b>).</p>
+  <h3>8. Children</h3><p class="small">RHYTHM is intended for users aged 13 and above.</p>
+  <h3>9. Contact</h3><p class="small">Privacy questions: use the <a onclick="R.nav('contact')">contact page</a>${CONTACT_EMAIL ? ` or email ${esc(CONTACT_EMAIL)}` : " (support inbox address to be published by the owner)"}.</p>
+  </div>`;
+}
+function contactView() {
+  window.__ctT = Date.now();
+  return `${ME ? crumbs([["Dashboard", "dash"], ["Contact", ""]]) : crumbs([["RHYTHM", "contact"], ["Contact", ""]])}
+  <div class="glass"><h2 style="margin-top:0">Contact us</h2>
+  <p class="small muted">Questions, feedback or support requests. Fields marked * are required. Please don't include passwords.</p>
+  <div id="ctMsg" aria-live="polite"></div>
+  <label>Name *</label><input id="ctName" autocomplete="name" placeholder="Your name">
+  <label>Email *</label><input id="ctEmail" type="email" autocomplete="email" placeholder="you@example.com">
+  <label>Subject *</label><input id="ctSubject" placeholder="What is this about?">
+  <label>Message *</label><textarea id="ctBody" rows="5" placeholder="How can we help? (min 10 characters)"></textarea>
+  <input id="ctCompany" class="hp" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
+  <div class="row" style="margin-top:12px"><button class="btn" onclick="R.submitContact()">Send message</button></div>
+  <p class="small dim">Also available: <a href="https://github.com/Black-Butterfly-Codes/RHYTHM" target="_blank" rel="noopener">GitHub repository</a>.</p>
+  </div>`;
+}
+export function submitContact() {
+  const g = (id) => document.getElementById(id).value.trim();
+  const box = document.getElementById("ctMsg");
+  const fail = (t) => { box.innerHTML = `<div class="formErr" role="alert">${esc(t)}</div>`; };
+  if (g("ctCompany")) return fail("Spam check failed. Please try again.");
+  if (window.__ctT && Date.now() - window.__ctT < 2000) return fail("That was too fast — please take a moment and resend.");
+  if (g("ctName").length < 2) return fail("Please enter your name.");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(g("ctEmail"))) return fail("Please enter a valid email address.");
+  if (g("ctSubject").length < 3) return fail("Please add a subject.");
+  if (g("ctBody").length < 10) return fail("Message needs at least 10 characters.");
+  const subject = encodeURIComponent("[RHYTHM contact] " + g("ctSubject"));
+  const body = encodeURIComponent(`From: ${g("ctName")} <${g("ctEmail")}>\n\n${g("ctBody")}`);
+  if (!CONTACT_EMAIL) {
+    box.innerHTML = `<div class="formOk" role="status">Your message is ready, but the owner hasn't published a support inbox yet. <button class="chip" onclick="R.copyContactText()">Copy message to clipboard</button></div>`;
+    return;
+  }
+  box.innerHTML = `<div class="formOk" role="status">Opening your email app to send the message…</div>`;
+  location.href = `mailto:${CONTACT_EMAIL}?subject=${subject}&body=${body}`;
+}
+export function copyContactText() {
+  const g = (id) => document.getElementById(id).value.trim();
+  const txt = `To: RHYTHM support\nFrom: ${g("ctName")} <${g("ctEmail")}>\nSubject: ${g("ctSubject")}\n\n${g("ctBody")}`;
+  if (navigator.clipboard) navigator.clipboard.writeText(txt).then(() => toast("Message copied — send it to the support inbox."), () => toast("Copy failed — select the text manually."));
 }
 
 // ----- app shell: sidebar (desktop) + bottom nav (mobile) + player -----
@@ -267,12 +438,14 @@ function appView() {
   else if (TAB === "msgs") body = msgsView();
   else if (TAB === "notifs") body = notifsView();
   else if (TAB === "profile") body = profileView();
+  else if (TAB === "privacy") body = privacyView();
+  else if (TAB === "contact") body = contactView();
   else if (TAB === "admin") body = adminView();
   return `<div class="app">
     <aside class="side">
       <div class="brand" onclick="R.nav('dash')"><span class="mark">♪</span><span><b>RHYTHM</b><small>CREATE TOGETHER</small></span></div>
       ${side}
-      <div class="sideFoot">Demo build · data stays<br>in this browser only.<br><a onclick="R.resetDemo()">↺ Reset demo data</a> · <a onclick="R.logout()">Logout</a></div>
+      <div class="sideFoot"><a onclick="R.nav('privacy')">Privacy</a> · <a onclick="R.nav('contact')">Contact</a><br>Demo build · data stays<br>in this browser only.<br><a onclick="R.resetDemo()">↺ Reset demo data</a> · <a onclick="R.logout()">Logout</a></div>
     </aside>
     <div class="main">
       <div class="toprow">
@@ -280,7 +453,7 @@ function appView() {
         ${ava(m.username)}
       </div>
       ${m.suspended ? `<div class="glass"><b style="color:#fb7185">Account suspended</b><p class="small muted">Posting, voting and bidding are disabled.</p></div>` : ""}
-      ${body}
+      ${body}${footLinks()}
     </div>
   </div>
   <nav class="bnav">${bnav}</nav>
@@ -854,7 +1027,7 @@ export async function login() {
 export function logout() { stopPreview(); QUEUE = []; QIDX = -1; ME = null; setSession(null); TAB = "dash"; render(); }
 export function resetDemo() { stopPreview(); QUEUE = []; QIDX = -1; wipeDB(); ME = null; setSession(null); boot(); }
 
-export function go(t) { TAB = t; if (t !== "collabs") VIEW_PROJECT = null; if (t !== "auctions") VIEW_AUCTION = null; if (t !== "msgs") VIEW_THREAD = null; if (t !== "profile") VIEW_USER = null; EXPANDED = null; render(); }
+export function go(t, skipHash) { if (t === "__signin") { TAB = "home"; EXPANDED = null; render(); setHash(""); return; } TAB = t; if (t !== "collabs") VIEW_PROJECT = null; if (t !== "auctions") VIEW_AUCTION = null; if (t !== "msgs") VIEW_THREAD = null; if (t !== "profile") VIEW_USER = null; EXPANDED = null; render(); if (!skipHash) setHash("#/" + t); }
 export function nav(k) { if (k === "__create") { openPostModal(); return; } go(k); }
 export function topSearch(v) {
   F.q = v; TAB = "explore"; EXPANDED = null; render();
@@ -914,7 +1087,7 @@ export function seekRestart(e) {
 }
 export function setVol(v) { VOL = v / 100; setVolume(VOL); }
 export function openPost(postId) {
-  TAB = "home"; EXPANDED = postId; VIEW_USER = null; render();
+  TAB = "home"; EXPANDED = postId; VIEW_USER = null; render(); setHash("#/post-" + postId);
   setTimeout(() => { const el = document.getElementById("post-" + postId); if (el) el.scrollIntoView({ block: "center" }); }, 50);
 }
 
