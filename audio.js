@@ -59,7 +59,17 @@ export function togglePreview(post) {
     const master = ctx.createGain();
     master.gain.value = 0.5 * volume;
     master.connect(ctx.destination);
-    const nodes = [master];
+    const nodes = new Set([master]);
+    const track = (o, g) => {
+      nodes.add(o); nodes.add(g);
+      // Release finished nodes so long sessions don't accumulate hundreds of
+      // disconnected oscillators/gains in memory.
+      o.onended = () => {
+        nodes.delete(o); nodes.delete(g);
+        try { o.disconnect(); } catch (e) { /* ignore */ }
+        try { g.disconnect(); } catch (e) { /* ignore */ }
+      };
+    };
     let idx = 0;
     const startAt = ctx.currentTime + 0.05;
     const playStep = (i, t) => {
@@ -73,8 +83,8 @@ export function togglePreview(post) {
         g.gain.exponentialRampToValueAtTime(0.5, t + 0.02);
         g.gain.exponentialRampToValueAtTime(0.0001, t + step * 1.8);
         o.connect(g); g.connect(master);
+        track(o, g);
         o.start(t); o.stop(t + step * 2);
-        nodes.push(o, g);
       }
       if (i % 4 === 0) { // soft kick
         const o = ctx.createOscillator();
@@ -85,8 +95,8 @@ export function togglePreview(post) {
         g.gain.setValueAtTime(0.6, t);
         g.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
         o.connect(g); g.connect(master);
+        track(o, g);
         o.start(t); o.stop(t + 0.2);
-        nodes.push(o, g);
       }
     };
     for (let i = 0; i < 32; i++) playStep(i, startAt + i * step);

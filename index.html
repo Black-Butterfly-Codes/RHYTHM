@@ -1,56 +1,89 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#06050e">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#06050e">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
 
-<title>RHYTHM | Music Collaboration Platform</title>
+  <title>RHYTHM | Music Collaboration Platform</title>
+  <meta name="description" content="Discover Indian music creators on RHYTHM. Connect with singers, instrumentalists, lyricists, composers and beatmakers. Discover talent, create together and rise together.">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://rhythm-music-platform.netlify.app/">
 
-<meta name="description" content="Discover Indian music creators on RHYTHM. Connect with singers, instrumentalists, lyricists, composers and beatmakers. Discover talent, create together and rise together.">
+  <!-- Icons -->
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
 
-<meta name="robots" content="index, follow">
+  <!-- Self-hosted font: no third-party requests -->
+  <link rel="preload" href="./assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
 
-<link rel="canonical" href="https://rhythm-music-platform.netlify.app/">
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="RHYTHM">
+  <meta property="og:locale" content="en_IN">
+  <meta property="og:title" content="RHYTHM | Music Collaboration Platform">
+  <meta property="og:description" content="Discover Talent. Create Together. Rise Together. Connect with independent music creators across India.">
+  <meta property="og:url" content="https://rhythm-music-platform.netlify.app/">
+  <meta property="og:image" content="https://rhythm-music-platform.netlify.app/assets/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="RHYTHM — Discover Talent. Create Together. Rise Together.">
 
-<!-- Open Graph -->
-<meta property="og:type" content="website">
-<meta property="og:site_name" content="RHYTHM">
-<meta property="og:title" content="RHYTHM | Music Collaboration Platform">
-<meta property="og:description" content="Discover Talent. Create Together. Rise Together. Connect with independent music creators across India.">
-<meta property="og:url" content="https://rhythm-music-platform.netlify.app/">
+  <!-- Twitter / X -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="RHYTHM | Music Collaboration Platform">
+  <meta name="twitter:description" content="Discover Talent. Create Together. Rise Together.">
+  <meta name="twitter:image" content="https://rhythm-music-platform.netlify.app/assets/og-image.png">
+  <meta name="twitter:image:alt" content="RHYTHM — Discover Talent. Create Together. Rise Together.">
 
-<!-- Twitter / X -->
-<meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="RHYTHM | Music Collaboration Platform">
-<meta name="twitter:description" content="Discover Talent. Create Together. Rise Together.">
-
-<!-- Organization Structured Data -->
-<script type="application/ld+json">
-{
+  <!-- Structured data -->
+  <script type="application/ld+json">
+  {
     "@context": "https://schema.org",
-    "@type": "Organization",
-    "name": "RHYTHM",
-    "url": "https://rhythm-music-platform.netlify.app/",
-    "description": "A music collaboration platform connecting independent creators across India.",
-    "slogan": "Discover Talent. Create Together. Rise Together."
-}
-</script>
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": "https://rhythm-music-platform.netlify.app/#org",
+        "name": "RHYTHM",
+        "url": "https://rhythm-music-platform.netlify.app/",
+        "logo": "https://rhythm-music-platform.netlify.app/favicon.svg",
+        "description": "A music collaboration platform connecting independent creators across India.",
+        "slogan": "Discover Talent. Create Together. Rise Together."
+      },
+      {
+        "@type": "WebSite",
+        "@id": "https://rhythm-music-platform.netlify.app/#website",
+        "name": "RHYTHM",
+        "url": "https://rhythm-music-platform.netlify.app/",
+        "publisher": { "@id": "https://rhythm-music-platform.netlify.app/#org" },
+        "inLanguage": "en-IN"
+      }
+    ]
+  }
+  </script>
 
-<link rel="stylesheet" href="./style.css">
-
+  <link rel="stylesheet" href="./style.css">
 </head>
 
 <body>
-    <div id="bootCtn"></div>
+  <div id="bootCtn"></div>
 
-<script type="module">
+  <noscript>
+    <main style="max-width:720px;margin:40px auto;padding:24px;font-family:system-ui,sans-serif;color:#EDE9FE;background:#06050e">
+      <h1>RHYTHM</h1>
+      <p><strong>Discover Talent. Create Together. Rise Together.</strong></p>
+      <p>RHYTHM needs JavaScript to run. It is a client-side prototype: all demo data stays in your own browser and nothing is uploaded to a server.</p>
+      <p>Independent music creators across India can find singers, instrumentalists, lyricists, composers and beatmakers, collaborate on projects, and license original work through documented auctions.</p>
+      <p><a href="./PRIVACY.md" style="color:#22D3EE">Privacy policy</a> · <a href="./CONTACT.md" style="color:#22D3EE">Contact</a> · <a href="https://github.com/Black-Butterfly-Codes/RHYTHM" style="color:#22D3EE">Source code</a></p>
+    </main>
+  </noscript>
+
+  <script type="module">
     import * as R from "./app.js";
-
     window.R = R;
     R.boot();
-</script>
-
+  </script>
 </body>
 </html>

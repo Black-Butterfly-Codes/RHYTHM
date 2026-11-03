@@ -1,21 +1,24 @@
 # CONTACT.md — Contact form configuration (RHYTHM)
 
-## 1. How it works today (Perchance / static prototype)
+## 1. How it works today (static prototype)
 
-The in-app Contact view (`contactView()` in `src/app.js`) is fully validated:
+The in-app Contact view (`contactView()` in `app.js`) is fully validated:
 
 - Required Name / Email / Subject / Message (email regex, min lengths).
 - Accessible errors (`role="alert"`, `aria-live` region).
 - Spam defenses: honeypot field + 2-second minimum fill-time trap.
 - Submit behaviour is honest about the environment:
-  - If `CONTACT_EMAIL` (top of `src/app.js`) is set to a real inbox, the form
+  - If `CONTACT_EMAIL` (top of `app.js`) is set to a real inbox, the form
     composes a `mailto:` message — the user's own email app sends it. No fake
     “we received it” claims: the confirmation says the email app is opening.
   - If unset, the form says so plainly and offers **copy to clipboard**.
 - No API keys, no secrets, no backend calls.
 
-**Owner action:** set `CONTACT_EMAIL = "you@yourdomain.com"` in `src/app.js`.
+**Owner action:** set `CONTACT_EMAIL = "you@yourdomain.com"` in `app.js`.
 (Don't invent one — the placeholder is intentionally empty.)
+
+The page is reachable directly at `/?page=contact` and is indexable; the
+`?page=` routes exist so crawlers get stable URLs without fragments.
 
 ## 2. Netlify Forms version (for rhythm-music-platform.netlify.app)
 
@@ -45,7 +48,8 @@ To upgrade the repo copy:
 
 ## 3. Spam & privacy notes
 
-- Never log message bodies to analytics. GA4 here tracks screen-views only.
+- Never log message bodies to analytics. Analytics is disabled by default and,
+  even when enabled, `analytics.js` tracks screen-views only.
 - The mailto path exposes the sender's email address to the inbox owner —
   that is the point of a contact form; say so on the page (already stated:
   “don't include passwords”).

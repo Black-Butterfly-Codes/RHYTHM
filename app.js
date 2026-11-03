@@ -1,10 +1,10 @@
 // RHYTHM app: session, tabs, feed, votes, boards, collabs, auctions, chat.
-import { loadDB, saveDB, wipeDB, getSession, setSession, sha256, uid } from "./store.js";
+import { loadDB, saveDB, wipeDB, getSession, setSession, hashPassword, verifyPassword, uid, DB_KEY, SESSION_KEY, DB_VERSION } from "./store.js";
 import { seedDB, REGIONS, DOMAINS, DOMAIN_LABEL, GENRES, LANGUAGES } from "./seed.js";
 import { togglePreview, isPlaying, stopPreview, setVolume, getVolume, currentTrack } from "./audio.js";
 import { initAnalytics, trackPage } from "./analytics.js";
+import { DAY, postScore, topBid, settleOutcome } from "./logic.js";
 
-const DAY = 86400000;
 const PERIODS = { week: 7 * DAY, month: 30 * DAY, year: 365 * DAY, all: Infinity };
 const PERIOD_LABEL = { week: "Weekly", month: "Monthly", year: "Yearly", all: "All-Time" };
 
@@ -25,42 +25,191 @@ let QUEUE = [];            // player queue (post ids)
 let QIDX = -1;             // index into QUEUE, -1 = nothing loaded
 let VOL = 0.8;
 
+let RUNTIME_STARTED = false;
+let MODAL_OPEN = false;
+let FOCUS_BEFORE_MODAL = null;
+
+function arr(v) { return Array.isArray(v) ? v : []; }
+
+/** Repair/upgrade a database loaded from an older build. Never invents users. */
 function migrate() {
-  if (DB.commissionPct == null) DB.commissionPct = 5;
+  DB.version = DB_VERSION;
+  if (DB.commissionPct == null || !Number.isFinite(+DB.commissionPct)) DB.commissionPct = 5;
+  DB.commissionPct = Math.max(0, Math.min(50, +DB.commissionPct));
+  DB.users = arr(DB.users);
+  DB.posts = arr(DB.posts);
+  DB.collabRequests = arr(DB.collabRequests);
+  DB.projects = arr(DB.projects);
+  DB.threads = arr(DB.threads);
+  DB.auctions = arr(DB.auctions);
+  DB.notifications = arr(DB.notifications);
+  DB.reports = arr(DB.reports);
+  DB.transactions = arr(DB.transactions);
+
+  const userIds = new Set(DB.users.filter((u) => u && u.id).map((u) => u.id));
+  const postIds = new Set(DB.posts.filter((p) => p && p.id).map((p) => p.id));
+
   for (const u of DB.users) {
-    if (!Array.isArray(u.favs)) u.favs = [];
-    if (!Array.isArray(u.following)) u.following = [];
-    if (!Array.isArray(u.playlists)) u.playlists = [];
+    if (!u || !u.id) continue;
+    u.favs = arr(u.favs);
+    u.following = arr(u.following).filter((id) => userIds.has(id) && id !== u.id);
+    u.playlists = arr(u.playlists).filter((pl) => pl && pl.id).map((pl) => ({ ...pl, postIds: arr(pl.postIds).filter((id) => postIds.has(id)) }));
+    u.domains = arr(u.domains).filter((d) => DOMAINS.includes(d));
+    if (!u.domains.length) u.domains = ["composer"];
+    if (!DOMAINS.includes(u.primary) || !u.domains.includes(u.primary)) u.primary = u.domains[0];
+    u.suspended = Boolean(u.suspended);
+    u.admin = Boolean(u.admin);
   }
+
+  for (const p of DB.posts) {
+    if (!p || !p.id) continue;
+    p.comments = arr(p.comments).filter((c) => c && typeof c.text === "string");
+    p.votes = arr(p.votes).filter((v) => v && (v.v === 1 || v.v === -1) && typeof v.u === "string" && userIds.has(v.u) && v.u !== p.userId);
+    const seen = new Set();
+    p.votes = p.votes.filter((v) => (seen.has(v.u) ? false : (seen.add(v.u), true)));
+    p.tags = arr(p.tags);
+  }
+
+  DB.collabRequests = DB.collabRequests.filter((r) => r && userIds.has(r.fromId) && userIds.has(r.toId) && (!r.postId || postIds.has(r.postId)));
+  DB.projects = DB.projects.filter((p) => p && p.id).map((p) => ({
+    ...p,
+    members: arr(p.members).filter((m) => m && userIds.has(m.userId)),
+    postIds: arr(p.postIds).filter((id) => postIds.has(id)),
+    files: arr(p.files),
+    chat: arr(p.chat),
+    updates: arr(p.updates),
+  }));
+  DB.threads = DB.threads.filter((t) => t && t.id && arr(t.members).filter((id) => userIds.has(id)).length > 1)
+    .map((t) => ({ ...t, messages: arr(t.messages) }));
+  DB.auctions = DB.auctions.filter((a) => a && a.id && userIds.has(a.sellerId));
+  DB.notifications = DB.notifications.filter((n) => n && userIds.has(n.userId));
+  DB.reports = DB.reports.filter((r) => r && r.id);
+  DB.transactions = arr(DB.transactions).filter((t) => t && t.id);
+}
+
+/** Hash any password still stored as plaintext (fresh seed / hand-edited DB). */
+async function upgradePlaintextPasswords() {
+  let changed = false;
+  for (const u of DB.users) {
+    const v = String(u.pass || "");
+    if (!v.startsWith("pbkdf2$") && !/^[a-f0-9]{64}$/.test(v)) {
+      u.pass = await hashPassword(v || "demo");
+      changed = true;
+    }
+  }
+  if (changed) saveDB(DB);
 }
 
 export async function boot() {
-  DB = loadDB();
-  if (!DB) {
-    DB = seedDB();
-    for (const u of DB.users) u.pass = await sha256(u.pass);
+  try {
+    DB = loadDB();
+    if (!DB) {
+      DB = seedDB();
+      for (const u of DB.users) u.pass = await hashPassword(u.pass);
+    }
+    migrate();
+    await upgradePlaintextPasswords();
+    saveDB(DB);
+    ME = getSession();
+    if (ME && !DB.users.some((u) => u.id === ME)) { ME = null; setSession(null); }
+    B.state = myState();
+    setVolume(VOL);
+    routeHash(); // honour #/tab or #/post-ID deep links on load
+    if (!RUNTIME_STARTED) startRuntime();
+    initAnalytics();
+    render();
+  } catch (e) {
+    console.error("RHYTHM boot failed", e);
+    const c = document.getElementById("bootCtn");
+    if (c) {
+      c.innerHTML = `<main class="authWrap"><div class="glass" role="alert">
+        <h1>RHYTHM</h1>
+        <h2>This browser could not start the app</h2>
+        <p class="small muted">${esc(e && e.message ? e.message : "Unknown startup error")}</p>
+        <p class="small dim">If you opened the file directly, serve it over http://localhost instead. Web Crypto (used for password hashing) requires a secure context.</p>
+        <div class="row"><button class="btn" onclick="R.resetDemo()">Reset demo data &amp; reload</button></div>
+      </div></main>`;
+    }
   }
-  migrate();
-  saveDB(DB);
-  ME = getSession();
-  if (ME && !DB.users.some((u) => u.id === ME)) { ME = null; setSession(null); }
-  B.state = myState();
-  setVolume(VOL);
-  routeHash(); // honour #/tab or #/post-ID deep links on load
+}
+
+function startRuntime() {
+  RUNTIME_STARTED = true;
   window.addEventListener("hashchange", () => {
     if (HASH_GUARD) return;
     const scrolled = routeHash();
     render();
     if (scrolled) setTimeout(() => { const el = document.getElementById("post-" + EXPANDED); if (el) el.scrollIntoView({ block: "center" }); }, 60);
   });
-  initAnalytics();
-  render();
+
+  // Keep multiple tabs on the same browser from silently overwriting each other.
+  window.addEventListener("storage", (e) => {
+    if (e.key !== DB_KEY && e.key !== SESSION_KEY) return;
+    const next = loadDB();
+    if (next) { DB = next; migrate(); }
+    ME = getSession();
+    if (ME && !DB.users.some((u) => u.id === ME)) { ME = null; setSession(null); }
+    render(true);
+  });
+
+  // Dialog keyboard support: Escape closes; Tab is trapped inside the dialog.
+  document.addEventListener("keydown", (e) => {
+    if (!MODAL) return;
+    if (e.key === "Escape") { e.preventDefault(); closeModal(); return; }
+    if (e.key !== "Tab") return;
+    const box = document.querySelector(".modalBox");
+    if (!box) return;
+    const focusables = [...box.querySelectorAll('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')]
+      .filter((el) => el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+
   setInterval(tickCountdowns, 1000);
   setInterval(updatePlayerUI, 500);
 }
 
-function save() { saveDB(DB); }
+/** Reset every transient view flag (used by logout/delete/reset). */
+function resetUiState() {
+  TAB = "dash";
+  AUTH_MODE = "in";
+  EXPANDED = null;
+  VIEW_USER = null;
+  VIEW_PROJECT = null;
+  VIEW_AUCTION = null;
+  VIEW_THREAD = null;
+  MODAL = null;
+  MODAL_OPEN = false;
+  FOCUS_BEFORE_MODAL = null;
+  F = { q: "", domain: "", state: "", genre: "", lang: "", collab: false, sort: "top" };
+  B = { domain: "lyricist", scope: "mystate", state: myState(), period: "week" };
+  CF = { q: "", domain: "" };
+  SIGNUP_DOMAINS = ["lyricist"];
+  QUEUE = [];
+  QIDX = -1;
+  HASH_GUARD = false;
+}
+
+function save() {
+  const r = saveDB(DB);
+  if (!r.ok) {
+    toast(r.error === "quota"
+      ? "Browser storage is full — delete a post or reset demo data."
+      : "Could not save changes in this browser.");
+  }
+  return r.ok;
+}
 function me() { return DB.users.find((u) => u.id === ME); }
+function isAdmin() { const u = me(); return Boolean(u && u.admin && !u.suspended); }
+function requireUser() {
+  const u = me();
+  if (!u) { toast("Please sign in first."); return null; }
+  if (u.suspended) { toast("Account suspended."); return null; }
+  return u;
+}
 function myState() { const m = me(); return m ? m.state : "Uttarakhand"; }
 function userById(id) { return DB.users.find((u) => u.id === id); }
 function postById(id) { return DB.posts.find((p) => p.id === id); }
@@ -123,7 +272,7 @@ function updatePlayerUI() {
 }
 
 // ---- SEO: per-screen titles/descriptions, canonical, robots, hash routes ----
-const CONTACT_EMAIL = ""; // TODO(owner): set support inbox, e.g. "hello@example.com". See src/CONTACT.md.
+const CONTACT_EMAIL = ""; // TODO(owner): set support inbox, e.g. "hello@example.com". See CONTACT.md.
 
 const SEO_META = {
   auth: ["Sign in | RHYTHM", "Sign in to RHYTHM and join singers, instrumentalists, lyricists, composers and beatmakers creating together."],
@@ -142,25 +291,50 @@ const SEO_META = {
   contact: ["Contact Us | RHYTHM", "Get in touch with the RHYTHM team: questions, feedback and support."],
 };
 
+function metaTag(attr, name, content) {
+  let el = document.head.querySelector(`meta[${attr}="${name}"]`);
+  if (!el) {
+    el = document.createElement("meta");
+    el.setAttribute(attr, name);
+    document.head.appendChild(el);
+  }
+  el.setAttribute("content", content);
+  return el;
+}
+
 function applySeo() {
   const pub = !ME && (TAB === "privacy" || TAB === "contact");
   const key = !ME ? (pub ? TAB : "auth") : (SEO_META[TAB] ? TAB : "dash");
   const [t, d] = SEO_META[key];
   document.title = t;
-  let m = document.querySelector('meta[name="description"]');
-  if (!m) { m = document.createElement("meta"); m.setAttribute("name", "description"); document.head.appendChild(m); }
-  m.setAttribute("content", d);
-  const canon = location.origin + location.pathname + (TAB === "privacy" || TAB === "contact" ? "#/" + TAB : "");
-  let c = document.querySelector('link[rel="canonical"]');
+  metaTag("name", "description", d);
+  metaTag("property", "og:title", t);
+  metaTag("property", "og:description", d);
+  metaTag("name", "twitter:title", t);
+  metaTag("name", "twitter:description", d);
+
+  // Canonical URLs must not contain a fragment. Public pages can be shared as
+  // ?page=privacy|contact so crawlers see stable, distinct URLs.
+  const base = location.origin + location.pathname;
+  const canon = pub ? `${base}?page=${TAB}` : base;
+  let c = document.head.querySelector('link[rel="canonical"]');
   if (!c) { c = document.createElement("link"); c.setAttribute("rel", "canonical"); document.head.appendChild(c); }
   c.setAttribute("href", canon);
+  metaTag("property", "og:url", canon);
+  try {
+    const image = new URL("assets/og-image.png", location.href).href;
+    metaTag("property", "og:image", image);
+    metaTag("name", "twitter:image", image);
+  } catch (e) { /* relative-only contexts (file://) */ }
+
   // App screens are private per-user state: keep them out of indexes. Public
   // pages (privacy/contact, logged out) stay indexable.
-  let r = document.querySelector('meta[name="robots"]');
   if (!pub) {
-    if (!r) { r = document.createElement("meta"); r.setAttribute("name", "robots"); document.head.appendChild(r); }
-    r.setAttribute("content", "noindex, nofollow");
-  } else if (r) r.remove();
+    metaTag("name", "robots", "noindex, nofollow");
+  } else {
+    const r = document.head.querySelector('meta[name="robots"]');
+    if (r) r.remove();
+  }
   trackPage(key);
 }
 
@@ -173,6 +347,11 @@ function setHash(h) {
 }
 /** Parse location.hash into TAB/EXPANDED state. Never renders by itself. */
 function routeHash() {
+  // Crawlable public URLs: /?page=privacy and /?page=contact.
+  try {
+    const page = new URLSearchParams(location.search).get("page");
+    if (page === "privacy" || page === "contact") { TAB = page; return false; }
+  } catch (e) { /* ignore */ }
   const h = location.hash || "";
   const mPost = h.match(/^#\/post-(.+)$/);
   if (mPost) {
@@ -192,6 +371,8 @@ function routeHash() {
 function toast(msg) {
   const t = document.createElement("div");
   t.className = "toast"; t.textContent = msg;
+  t.setAttribute("role", "status");
+  t.setAttribute("aria-live", "polite");
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 2600);
 }
@@ -201,10 +382,6 @@ function notify(userId, text, kind) {
 }
 
 // ---------- scoring / boards ----------
-function postScore(p, windowMs) {
-  const since = Date.now() - windowMs;
-  return p.votes.reduce((s, v) => s + (v.ts >= since ? v.v : 0), 0);
-}
 function userScore(userId, domain, windowMs) {
   return DB.posts.filter((p) => p.userId === userId && p.domain === domain)
     .reduce((s, p) => s + postScore(p, windowMs), 0);
@@ -228,22 +405,18 @@ function nationalBoard(domain, windowMs) {
 }
 
 // ---------- auctions ----------
-function topBid(a) {
-  return a.bids.length ? a.bids.reduce((m, b) => (b.amount > m.amount ? b : m), a.bids[0]) : null;
-}
 function settleAuctions() {
   let changed = false;
   const now = Date.now();
   for (const a of DB.auctions) {
-    if (a.status !== "live" || now < a.endsAt) continue;
+    const outcome = settleOutcome(a, now, DB.commissionPct);
+    if (!outcome) continue;
     a.status = "completed";
-    const top = topBid(a);
-    const ok = top && top.amount >= (a.reservePrice || 0);
-    if (ok) {
-      const fee = Math.round(top.amount * (DB.commissionPct || 5) / 100);
-      DB.transactions.push({ id: uid("t"), auctionId: a.id, sellerId: a.sellerId, buyerId: top.userId, amount: top.amount, fee, ts: now });
+    if (outcome.sold) {
+      const top = outcome.top;
+      DB.transactions.push({ id: uid("t"), auctionId: a.id, sellerId: a.sellerId, buyerId: top.userId, amount: top.amount, fee: outcome.fee, ts: now });
       notify(top.userId, `You WON “${a.title}” for ₹${top.amount}. Proceed to payment in Auctions.`, "auction");
-      notify(a.sellerId, `Your auction “${a.title}” sold for ₹${top.amount} (fee ₹${fee}).`, "auction");
+      notify(a.sellerId, `Your auction “${a.title}” sold for ₹${top.amount} (fee ₹${outcome.fee}).`, "auction");
     } else {
       notify(a.sellerId, `Your auction “${a.title}” ended with no qualifying bid.`, "auction");
     }
@@ -266,16 +439,31 @@ function render(keepScroll) {
   const y = keepScroll ? window.scrollY : 0;
   const c = document.getElementById("bootCtn");
   const pub = !ME && (TAB === "privacy" || TAB === "contact");
+  const wasModal = MODAL_OPEN;
+  if (MODAL && !MODAL_OPEN) {
+    FOCUS_BEFORE_MODAL = document.activeElement;
+    MODAL_OPEN = true;
+  }
+  if (!MODAL) MODAL_OPEN = false;
   c.innerHTML = ME ? appView() : (pub ? publicView() : authView());
   if (ME) tickCountdowns();
   applySeo();
   window.scrollTo(0, keepScroll ? y : 0);
+
+  if (MODAL_OPEN && !wasModal) {
+    const box = document.querySelector(".modalBox");
+    const first = box && box.querySelector('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])');
+    (first || box || null)?.focus();
+  } else if (!MODAL_OPEN && wasModal) {
+    try { FOCUS_BEFORE_MODAL && FOCUS_BEFORE_MODAL.focus(); } catch (e) { /* ignore */ }
+    FOCUS_BEFORE_MODAL = null;
+  }
 }
 
 // ----- auth -----
 function authView() {
   const inMode = AUTH_MODE === "in";
-  return `<div class="authWrap">
+  return `<main class="authWrap">
     <div class="authLogo"><div class="mark">♪</div>
       <h1>RHYTHM</h1>
       <p class="muted small">Discover Talent. Create Together. Rise Together.</p>
@@ -286,76 +474,76 @@ function authView() {
         <button class="btn ${inMode ? "ghost" : ""}" onclick="R.setAuth('up')">Sign Up</button>
       </div>
       ${inMode ? `
-      <label>Email or username</label><input id="liIdInput" placeholder="rahul@demo.in" autocomplete="username">
-      <label>Password</label><input id="liPassInput" type="password" placeholder="••••••••" autocomplete="current-password">
+      <label for="liIdInput">Email or username</label><input id="liIdInput" maxlength="120" placeholder="rahul@demo.in" autocomplete="username">
+      <label for="liPassInput">Password</label><input id="liPassInput" type="password" maxlength="200" placeholder="••••••••" autocomplete="current-password">
       <div class="row" style="margin-top:14px"><button class="btn grow" onclick="R.login()">Sign In →</button></div>
-      <p class="small dim"><a onclick="R.fakeRecovery()">Forgot password?</a> (demo build — use a seeded account)</p>
+      <p class="small dim"><button type="button" class="lnk" onclick="R.fakeRecovery()">Forgot password?</button> (demo build — use a seeded account)</p>
       ` : `
-      <label>Full name</label><input id="suNameInput" placeholder="Your name">
-      <label>Username</label><input id="suUserInput" placeholder="e.g. deelbeats">
-      <label>Email</label><input id="suEmailInput" placeholder="you@email.in">
-      <div class="grid2"><div><label>Password (min 8)</label><input id="suPassInput" type="password" autocomplete="new-password"></div>
-      <div><label>Confirm password</label><input id="suPass2Input" type="password" autocomplete="new-password"></div></div>
-      <div class="grid2"><div><label>Date of birth</label><input id="suDobInput" type="date"></div>
-      <div><label>City</label><input id="suCityInput" placeholder="Dehradun"></div></div>
-      <label>State / Union Territory (decides your leaderboard)</label>
-      <select id="suStateInput">${REGIONS.map((r) => `<option>${r}</option>`).join("")}</select>
+      <label for="suNameInput">Full name</label><input id="suNameInput" maxlength="60" autocomplete="name" placeholder="Your name">
+      <label for="suUserInput">Username</label><input id="suUserInput" maxlength="24" autocomplete="username" placeholder="e.g. deelbeats">
+      <label for="suEmailInput">Email</label><input id="suEmailInput" type="email" maxlength="120" autocomplete="email" placeholder="you@email.in">
+      <div class="grid2"><div><label for="suPassInput">Password (min 8)</label><input id="suPassInput" type="password" maxlength="200" autocomplete="new-password"></div>
+      <div><label for="suPass2Input">Confirm password</label><input id="suPass2Input" type="password" maxlength="200" autocomplete="new-password"></div></div>
+      <div class="grid2"><div><label for="suDobInput">Date of birth</label><input id="suDobInput" type="date" autocomplete="bday"></div>
+      <div><label for="suCityInput">City</label><input id="suCityInput" maxlength="60" autocomplete="address-level2" placeholder="Dehradun"></div></div>
+      <label for="suStateInput">State / Union Territory (decides your leaderboard)</label>
+      <select id="suStateInput" aria-label="State or Union Territory">${REGIONS.map((r) => `<option>${r}</option>`).join("")}</select>
       <label>Creative domains (pick all that apply)</label>
       <div class="domPick">${DOMAINS.map((d) => `<label data-dom="${d}" class="${SIGNUP_DOMAINS.includes(d) ? "sel" : ""}"><input type="checkbox" ${SIGNUP_DOMAINS.includes(d) ? "checked" : ""} onchange="R.toggleDom('${d}')">${DOMAIN_LABEL[d]}</label>`).join("")}</div>
-      <label>Primary domain (your main ranking)</label><select id="suPrimaryInput">${SIGNUP_DOMAINS.map((d) => `<option value="${d}">${DOMAIN_LABEL[d]}</option>`).join("")}</select>
-      <label>Bio</label><input id="suBioInput" placeholder="Short intro…">
+      <label for="suPrimaryInput">Primary domain (your main ranking)</label><select id="suPrimaryInput" aria-label="Primary creative domain">${SIGNUP_DOMAINS.map((d) => `<option value="${d}">${DOMAIN_LABEL[d]}</option>`).join("")}</select>
+      <label for="suBioInput">Bio</label><input id="suBioInput" maxlength="300" placeholder="Short intro…">
       <div class="row" style="margin-top:14px"><button class="btn grow" onclick="R.signup()">Create account →</button></div>`}
-    </div>${footLinks()}</div>${MODAL ? modalHtml() : ""}`;
+    </div>${footLinks()}</main>${ME && MODAL ? modalHtml() : ""}`;
 }
 
 // ----- public shell, footer, privacy & contact (crawlable, no login needed) -----
 function footLinks() {
   const pub = !ME;
   const goTab = (t, label) => pub && !["privacy", "contact"].includes(t)
-    ? `<a onclick="R.go('__signin')">${label}</a>`
-    : `<a onclick="R.nav('${t}')">${label}</a>`;
+    ? `<button type="button" class="lnk" onclick="R.go('__signin')">${label}</button>`
+    : `<button type="button" class="lnk" onclick="R.nav('${t}')">${label}</button>`;
   return `<div class="foot"><span>© RHYTHM · Discover Talent. Create Together. Rise Together.</span><span class="grow"></span>
-    <a onclick="R.nav('privacy')">Privacy Policy</a><a onclick="R.nav('contact')">Contact</a>
+    <button type="button" class="lnk" onclick="R.nav('privacy')">Privacy Policy</button><button type="button" class="lnk" onclick="R.nav('contact')">Contact</button>
     ${goTab("home", "Discover")}${goTab("creators", "Creators")}${goTab("boards", "Leaderboards")}
     <a href="https://github.com/Black-Butterfly-Codes/RHYTHM" target="_blank" rel="noopener">GitHub</a></div>`;
 }
 // '__signin' pseudo-target: logged-out users land on the sign-in screen.
 function publicView() {
   const body = TAB === "contact" ? contactView() : privacyView();
-  return `<div class="authWrap" style="max-width:720px">
+  return `<main class="authWrap" style="max-width:720px">
     <div class="authLogo"><div class="mark">♪</div><h1 style="letter-spacing:.18em;margin:14px 0 2px;font-size:22px">RHYTHM</h1>
     <p class="muted small">Discover Talent. Create Together. Rise Together.</p></div>
     <div class="row" style="justify-content:center;margin-bottom:6px">
       <button class="btn small ghost" onclick="R.nav('privacy')">Privacy</button>
       <button class="btn small ghost" onclick="R.nav('contact')">Contact</button>
       <button class="btn small" onclick="R.go('__signin')">Sign in / Join →</button>
-    </div>${body}${footLinks()}</div>${MODAL ? modalHtml() : ""}`;
+    </div>${body}${footLinks()}</main>${ME && MODAL ? modalHtml() : ""}`;
 }
 function crumbs(items) {
   return `<nav class="crumbs" aria-label="Breadcrumb">${items.map((it, i) =>
-    i < items.length - 1 ? `<a onclick="R.nav('${it[1]}')">${esc(it[0])}</a><span aria-hidden="true">›</span>`
+    i < items.length - 1 ? `<button type="button" class="lnk" onclick="R.nav('${it[1]}')">${esc(it[0])}</button><span aria-hidden="true">›</span>`
     : `<span aria-current="page">${esc(it[0])}</span>`).join("")}</nav>`;
 }
 function privacyView() {
   return `${ME ? crumbs([["Dashboard", "dash"], ["Privacy Policy", ""]]) : crumbs([["RHYTHM", "privacy"], ["Privacy Policy", ""]])}
   <div class="glass"><h2 style="margin-top:0">Privacy Policy</h2>
-  <p class="small dim">Last updated: October 2026 · Prototype build. This policy describes what this demo actually does — not a future production system.</p>
+  <p class="small dim">Last updated: November 2026 · Prototype build. This policy describes what this demo actually does — not a future production system.</p>
   <h3>1. What this app is</h3>
   <p class="small">RHYTHM is currently a <b>client-side prototype</b>: all data lives in your own browser's local storage on your device. There is no RHYTHM server, no cloud database, and nothing is transmitted anywhere over the network by the app itself.</p>
   <h3>2. Information you provide</h3>
   <p class="small">When you sign up you enter a name, username, email, password, date of birth, state/city and bio. When you use the app you create posts (lyrics, track metadata), votes, comments, collaboration messages, bids and auction listings. All of it is stored locally in your browser.</p>
   <h3>3. Passwords & sessions</h3>
-  <p class="small">Passwords are stored only as salted SHA-256 hashes (demo-grade; production will use Argon2id). Sessions persist in local storage until you log out. Five failed logins trigger a 60-second lockout. See <b>src/docs/AUTH.md</b> in the project repo.</p>
+  <p class="small">Passwords are stored only as salted <b>PBKDF2-SHA256</b> digests (210,000 iterations, random per-user salt) via the browser's Web Crypto API. This is demo-grade client-side storage, not a substitute for server-side Argon2id hashing. Sessions persist in local storage until you log out. Five failed logins trigger a 60-second lockout. See <b>AUTH.md</b> in the project repo.</p>
   <h3>4. Cookies & local storage</h3>
-  <p class="small">The app uses local storage keys for the database, your session and login-attempt limits. It sets no third-party cookies. Analytics is included in the code but <b>disabled until the owner configures a measurement ID</b> — with the default build, no analytics requests are made.</p>
+  <p class="small">The app uses local storage keys for the database, your session and login-attempt limits. It sets no third-party cookies. The web font is self-hosted, so the default build makes <b>no third-party network requests</b>. Analytics code is included but <b>disabled until the owner configures a measurement ID</b> — with the default build, no analytics requests are made.</p>
   <h3>5. Sharing & third parties</h3>
-  <p class="small">None. Your data never leaves your device through this app. Share links you copy contain only a track reference. If you contact support by email, your message goes to that inbox under that provider's policy.</p>
+  <p class="small">None. Your data never leaves your device through this app. Share links you copy contain only a track reference. If you contact support by email, your message goes to that inbox under that provider's policy. The public pages (<b>?page=privacy</b> and <b>?page=contact</b>) are indexable by search engines; signed-in app screens are marked <b>noindex</b> and are not meant to be indexed.</p>
   <h3>6. Retention & deletion</h3>
   <p class="small">Data persists until you clear browser storage, use “Reset demo data”, or delete your account (Profile → Delete my account), which purges your posts, votes, chats, listings and profile from this device.</p>
   <h3>7. Security limitations (read carefully)</h3>
-  <p class="small">Browser local storage is <b>not encrypted</b> and is readable by any script running on the same origin, so this prototype must not hold sensitive personal data. Production hosting will add TLS, server-side auth, encrypted storage and backups (see <b>src/docs/DATA_SECURITY.md</b>).</p>
+  <p class="small">Browser local storage is <b>not encrypted</b> and is readable by any script running on the same origin, so this prototype must not hold sensitive personal data. Production hosting will add TLS, server-side auth, encrypted storage and backups (see <b>DATA_SECURITY.md</b>).</p>
   <h3>8. Children</h3><p class="small">RHYTHM is intended for users aged 13 and above.</p>
-  <h3>9. Contact</h3><p class="small">Privacy questions: use the <a onclick="R.nav('contact')">contact page</a>${CONTACT_EMAIL ? ` or email ${esc(CONTACT_EMAIL)}` : " (support inbox address to be published by the owner)"}.</p>
+  <h3>9. Contact</h3><p class="small">Privacy questions: use the <button type="button" class="lnk" onclick="R.nav('contact')">contact page</button>${CONTACT_EMAIL ? ` or email ${esc(CONTACT_EMAIL)}` : " (support inbox address to be published by the owner)"}.</p>
   </div>`;
 }
 function contactView() {
@@ -364,10 +552,10 @@ function contactView() {
   <div class="glass"><h2 style="margin-top:0">Contact us</h2>
   <p class="small muted">Questions, feedback or support requests. Fields marked * are required. Please don't include passwords.</p>
   <div id="ctMsg" aria-live="polite"></div>
-  <label>Name *</label><input id="ctName" autocomplete="name" placeholder="Your name">
-  <label>Email *</label><input id="ctEmail" type="email" autocomplete="email" placeholder="you@example.com">
-  <label>Subject *</label><input id="ctSubject" placeholder="What is this about?">
-  <label>Message *</label><textarea id="ctBody" rows="5" placeholder="How can we help? (min 10 characters)"></textarea>
+  <label for="ctName">Name *</label><input id="ctName" name="name" autocomplete="name" maxlength="60" placeholder="Your name">
+  <label for="ctEmail">Email *</label><input id="ctEmail" name="email" type="email" autocomplete="email" maxlength="120" placeholder="you@example.com">
+  <label for="ctSubject">Subject *</label><input id="ctSubject" name="subject" maxlength="120" placeholder="What is this about?">
+  <label for="ctBody">Message *</label><textarea id="ctBody" name="message" rows="5" maxlength="2000" placeholder="How can we help? (min 10 characters)"></textarea>
   <input id="ctCompany" class="hp" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
   <div class="row" style="margin-top:12px"><button class="btn" onclick="R.submitContact()">Send message</button></div>
   <p class="small dim">Also available: <a href="https://github.com/Black-Butterfly-Codes/RHYTHM" target="_blank" rel="noopener">GitHub repository</a>.</p>
@@ -380,9 +568,12 @@ export function submitContact() {
   if (g("ctCompany")) return fail("Spam check failed. Please try again.");
   if (window.__ctT && Date.now() - window.__ctT < 2000) return fail("That was too fast — please take a moment and resend.");
   if (g("ctName").length < 2) return fail("Please enter your name.");
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(g("ctEmail"))) return fail("Please enter a valid email address.");
+  if (g("ctName").length > 60) return fail("Name is too long.");
+  if (g("ctEmail").length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(g("ctEmail"))) return fail("Please enter a valid email address.");
   if (g("ctSubject").length < 3) return fail("Please add a subject.");
+  if (g("ctSubject").length > 120) return fail("Subject is too long.");
   if (g("ctBody").length < 10) return fail("Message needs at least 10 characters.");
+  if (g("ctBody").length > 2000) return fail("Message is too long (max 2,000 characters).");
   const subject = encodeURIComponent("[RHYTHM contact] " + g("ctSubject"));
   const body = encodeURIComponent(`From: ${g("ctName")} <${g("ctEmail")}>\n\n${g("ctBody")}`);
   if (!CONTACT_EMAIL) {
@@ -445,16 +636,16 @@ function appView() {
     <aside class="side">
       <div class="brand" onclick="R.nav('dash')"><span class="mark">♪</span><span><b>RHYTHM</b><small>CREATE TOGETHER</small></span></div>
       ${side}
-      <div class="sideFoot"><a onclick="R.nav('privacy')">Privacy</a> · <a onclick="R.nav('contact')">Contact</a><br>Demo build · data stays<br>in this browser only.<br><a onclick="R.resetDemo()">↺ Reset demo data</a> · <a onclick="R.logout()">Logout</a></div>
+      <div class="sideFoot"><button type="button" class="lnk" onclick="R.nav('privacy')">Privacy</button> · <button type="button" class="lnk" onclick="R.nav('contact')">Contact</button><br>Demo build · data stays<br>in this browser only.<br><button type="button" class="lnk" onclick="R.resetDemo()">↺ Reset demo data</button> · <button type="button" class="lnk" onclick="R.logout()">Logout</button></div>
     </aside>
-    <div class="main">
+    <main class="main" id="main">
       <div class="toprow">
-        <div class="searchbar">🔍<input id="topSearch" placeholder="Search tracks, lyrics, creators…" value="${esc(F.q)}" oninput="R.topSearch(this.value)"></div>
+        <div class="searchbar">🔍<input id="topSearch" aria-label="Search tracks, lyrics and creators" placeholder="Search tracks, lyrics, creators…" value="${esc(F.q)}" oninput="R.topSearch(this.value)"></div>
         ${ava(m.username)}
       </div>
       ${m.suspended ? `<div class="glass"><b style="color:#fb7185">Account suspended</b><p class="small muted">Posting, voting and bidding are disabled.</p></div>` : ""}
       ${body}${footLinks()}
-    </div>
+    </main>
   </div>
   <nav class="bnav">${bnav}</nav>
   ${playerBar()}
@@ -471,15 +662,15 @@ function playerBar() {
     <div class="art" style="${artStyle(p.audioSeed || p.id)};width:52px;height:52px"><span class="em">${DOMAIN_EMOJI[p.domain] || "🎵"}</span></div>
     <div class="tmeta"><b>${esc(p.title)}</b><span>${esc(a ? a.username : "?")} · ${esc(p.genre)}</span></div>
     <div class="pctr">
-      <button class="pbtn ghost" onclick="R.prevTrack()">⏮</button>
-      <button class="pbtn" onclick="R.togglePlay()">${playing ? "⏸" : "▶"}</button>
-      <button class="pbtn ghost" onclick="R.nextTrack()">⏭</button>
+      <button class="pbtn ghost" aria-label="Previous track" onclick="R.prevTrack()">⏮</button>
+      <button class="pbtn" aria-label="${playing ? "Pause" : "Play"} preview" onclick="R.togglePlay()">${playing ? "⏸" : "▶"}</button>
+      <button class="pbtn ghost" aria-label="Next track" onclick="R.nextTrack()">⏭</button>
     </div>
-    <div class="pprog" onclick="R.seekRestart(event)"><div class="bar"><i id="ppFill" style="width:0%"></i></div></div>
+    <div class="pprog" role="button" tabindex="0" aria-label="Restart preview" onclick="R.seekRestart(event)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();R.seekRestart(event);}"><div class="bar"><i id="ppFill" style="width:0%"></i></div></div>
     <span class="ptime" id="ppTime">0:00</span>
-    <button class="pbtn ghost ${fav ? "on" : ""}" onclick="R.toggleFav('${p.id}',true)">♥</button>
-    <button class="pbtn ghost" onclick="R.openPickList('${p.id}')">＋</button>
-    <div class="vol">🔊<input type="range" min="0" max="100" value="${Math.round(getVolume() * 100)}" oninput="R.setVol(this.value)"></div>
+    <button class="pbtn ghost ${fav ? "on" : ""}" aria-label="Like this track" aria-pressed="${fav}" onclick="R.toggleFav('${p.id}',true)">♥</button>
+    <button class="pbtn ghost" aria-label="Add to playlist" onclick="R.openPickList('${p.id}')">＋</button>
+    <div class="vol">🔊<input type="range" aria-label="Volume" min="0" max="100" value="${Math.round(getVolume() * 100)}" oninput="R.setVol(this.value)"></div>
   </div>`;
 }
 
@@ -497,24 +688,24 @@ function trackRow(p, queueIds, opts) {
       ${playing ? `<span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:20px">⏸</span>` : ""}</div>
     <div class="meta">
       <b style="cursor:pointer" onclick="R.openPost('${p.id}')">${esc(p.title)}</b>
-      <span class="sub"><a onclick="R.viewUser('${p.userId}')">${esc(a ? a.username : "deleted")}</a> · ${DOMAIN_LABEL[p.domain]} · ${esc(p.genre)} · ${timeAgo(p.createdAt)}</span>
+      <span class="sub"><button type="button" class="lnk" onclick="R.viewUser('${p.userId}')">${esc(a ? a.username : "deleted")}</button> · ${DOMAIN_LABEL[p.domain]} · ${esc(p.genre)} · ${timeAgo(p.createdAt)}</span>
       <span>${p.collabOpen ? `<span class="badge cy">open to collab</span>` : ""}${live ? `<span class="badge hot">🔨 on auction</span>` : ""}${p.bpm ? `<span class="badge">${p.bpm} BPM</span>` : ""}</span>
       ${p.domain === "lyricist" && p.body && opts.expanded ? `<div class="lyricsBox">${esc(p.body)}</div>` : ""}
       ${opts.expanded ? commentsHtml(p) : ""}
       ${!opts.expanded && p.domain === "lyricist" && p.body ? `<div class="small dim" style="cursor:pointer" onclick="R.toggleExpand('${p.id}')">📜 lyrics preview — tap to expand</div>` : ""}
     </div>
     <div class="voteCol">
-      <button class="${myVote && myVote.v === 1 ? "up" : ""}" onclick="R.vote('${p.id}',1)">▲ ${p.votes.filter((v) => v.v === 1).length}</button>
-      <button class="${myVote && myVote.v === -1 ? "dn" : ""}" onclick="R.vote('${p.id}',-1)">▼ ${p.votes.filter((v) => v.v === -1).length}</button>
+      <button class="${myVote && myVote.v === 1 ? "up" : ""}" aria-label="Upvote" aria-pressed="${Boolean(myVote && myVote.v === 1)}" onclick="R.vote('${p.id}',1)">▲ ${p.votes.filter((v) => v.v === 1).length}</button>
+      <button class="${myVote && myVote.v === -1 ? "dn" : ""}" aria-label="Downvote" aria-pressed="${Boolean(myVote && myVote.v === -1)}" onclick="R.vote('${p.id}',-1)">▼ ${p.votes.filter((v) => v.v === -1).length}</button>
     </div>
     <div class="voteCol">
       <button class="pbtn ${playing ? "" : "ghost"}" style="width:38px;height:38px" onclick="R.playTrack('${p.id}','${q}')">${playing ? "⏸" : "▶"}</button>
-      <button onclick="R.toggleExpand('${p.id}')" title="comments">💬 ${p.comments.length}</button>
+      <button onclick="R.toggleExpand('${p.id}')" aria-label="Toggle comments" title="comments">💬 ${p.comments.length}</button>
     </div>
     <div class="voteCol">
-      ${p.userId !== ME ? `<button onclick="R.openCollab('${p.id}')" title="collaborate">🤝</button>` : ""}
-      <button onclick="R.share('${p.id}')" title="share">↗</button>
-      ${p.userId === ME ? `${p.auctionEligible && !live ? `<button onclick="R.openAuctionCreate('${p.id}')" title="auction">🔨</button>` : ""}<button onclick="R.deletePost('${p.id}')" title="delete">🗑</button>` : `<button onclick="R.openReport('${p.id}')" title="report">⚑</button>`}
+      ${p.userId !== ME ? `<button onclick="R.openCollab('${p.id}')" aria-label="Request collaboration" title="collaborate">🤝</button>` : ""}
+      <button onclick="R.share('${p.id}')" aria-label="Copy share link" title="share">↗</button>
+      ${p.userId === ME ? `${p.auctionEligible && !live ? `<button onclick="R.openAuctionCreate('${p.id}')" aria-label="Create auction" title="auction">🔨</button>` : ""}<button onclick="R.deletePost('${p.id}')" aria-label="Delete post" title="delete">🗑</button>` : `<button onclick="R.openReport('${p.id}')" aria-label="Report post" title="report">⚑</button>`}
     </div>
   </div>`;
 }
@@ -593,12 +784,12 @@ function dashView() {
       ${st.badges.length ? `<div>${st.badges.map((b) => `<span class="badge hot">🏅 ${esc(b)}</span>`).join("")}</div>` : ""}
     </div>
     <div class="glass"><h3>🤝 Collaboration activity</h3>
-      ${myProjects.length ? myProjects.slice(0, 3).map((p) => `<div class="small">🎵 <a onclick="R.openProject('${p.id}')">${esc(p.title)}</a> <span class="badge">${esc(p.status)}</span></div>`).join("") : `<p class="muted small">No projects yet.</p>`}
+      ${myProjects.length ? myProjects.slice(0, 3).map((p) => `<div class="small">🎵 <button type="button" class="lnk" onclick="R.openProject('${p.id}')">${esc(p.title)}</button> <span class="badge">${esc(p.status)}</span></div>`).join("") : `<p class="muted small">No projects yet.</p>`}
       ${pendingIn ? `<button class="chip" onclick="R.nav('collabs')">📥 ${pendingIn} incoming request${pendingIn > 1 ? "s" : ""} →</button>` : `<button class="chip" onclick="R.nav('creators')">Find someone to create with →</button>`}
     </div>
   </div>
 
-  <div class="railTitle"><h3>🔥 Trending this week</h3><span class="grow"></span><a class="small" onclick="R.nav('home')">Open Discover →</a></div>
+  <div class="railTitle"><h3>🔥 Trending this week</h3><span class="grow"></span><button type="button" class="lnk" class="small" onclick="R.nav('home')">Open Discover →</button></div>
   <div class="rail">${trend.map((p) => tCard(p, trendIds)).join("") || `<p class="muted small">Nothing trending yet.</p>`}</div>
 
   <div class="grid2">
@@ -628,7 +819,7 @@ function homeView() {
   list.sort((a, b) => F.sort === "top" ? postScore(b, Infinity) - postScore(a, Infinity) : b.createdAt - a.createdAt);
   const listIds = list.map((p) => p.id).join(",");
   return `
-  <div class="railTitle"><h3>⭐ Featured creators</h3><span class="grow"></span><a class="small" onclick="R.nav('creators')">All creators →</a></div>
+  <div class="railTitle"><h3>⭐ Featured creators</h3><span class="grow"></span><button type="button" class="lnk" class="small" onclick="R.nav('creators')">All creators →</button></div>
   <div class="rail">${creators.map((r) => creatorCard(r.u)).join("") || `<p class="muted small">No creators yet.</p>`}</div>
 
   <div class="railTitle"><h3>🔥 Trending tracks</h3></div>
@@ -642,8 +833,8 @@ function homeView() {
     <div class="row" style="margin-top:10px">
       <button class="pill ${!F.domain ? "on" : ""}" onclick="R.setF('domain','')">All</button>
       ${DOMAINS.map((d) => `<button class="pill ${F.domain === d ? "on" : ""}" onclick="R.setF('domain','${d}')">${DOMAIN_LABEL[d]}</button>`).join("")}
-      <select style="max-width:150px" onchange="R.setF('genre',this.value)"><option value="">All genres</option>${GENRES.map((g) => `<option ${F.genre === g ? "selected" : ""}>${g}</option>`).join("")}</select>
-      <select style="max-width:130px" onchange="R.setF('sort',this.value)"><option value="top" ${F.sort === "top" ? "selected" : ""}>Top rated</option><option value="new" ${F.sort === "new" ? "selected" : ""}>Newest</option></select>
+      <select aria-label="Filter by genre" style="max-width:150px" onchange="R.setF('genre',this.value)"><option value="">All genres</option>${GENRES.map((g) => `<option ${F.genre === g ? "selected" : ""}>${g}</option>`).join("")}</select>
+      <select aria-label="Sort tracks" style="max-width:130px" onchange="R.setF('sort',this.value)"><option value="top" ${F.sort === "top" ? "selected" : ""}>Top rated</option><option value="new" ${F.sort === "new" ? "selected" : ""}>Newest</option></select>
     </div></div>
     ${list.map((p) => trackRow(p, listIds, { expanded: EXPANDED === p.id })).join("") || `<div class="glass"><p class="muted">No tracks yet — be the first!</p></div>`}`;
 }
@@ -662,10 +853,10 @@ function exploreView() {
   const listIds = list.map((p) => p.id).join(",");
   return `<div class="glass"><h3 style="margin-top:0">🔍 Explore${F.q ? ` — “${esc(F.q)}” (${list.length})` : ""}</h3>
     <div class="grid2">
-      <div><label>Domain</label><select onchange="R.setF('domain',this.value)"><option value="">Any</option>${DOMAINS.map((d) => `<option value="${d}" ${F.domain === d ? "selected" : ""}>${DOMAIN_LABEL[d]}</option>`).join("")}</select></div>
-      <div><label>State</label><select onchange="R.setF('state',this.value)"><option value="">Anywhere</option>${REGIONS.map((r) => `<option ${F.state === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
-      <div><label>Genre</label><select onchange="R.setF('genre',this.value)"><option value="">Any</option>${GENRES.map((g) => `<option ${F.genre === g ? "selected" : ""}>${g}</option>`).join("")}</select></div>
-      <div><label>Language</label><select onchange="R.setF('lang',this.value)"><option value="">Any</option>${LANGUAGES.map((l) => `<option ${F.lang === l ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <div><label>Domain</label><select aria-label="Filter by domain" onchange="R.setF('domain',this.value)"><option value="">Any</option>${DOMAINS.map((d) => `<option value="${d}" ${F.domain === d ? "selected" : ""}>${DOMAIN_LABEL[d]}</option>`).join("")}</select></div>
+      <div><label>State</label><select aria-label="Filter by state" onchange="R.setF('state',this.value)"><option value="">Anywhere</option>${REGIONS.map((r) => `<option ${F.state === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
+      <div><label>Genre</label><select aria-label="Filter by genre" onchange="R.setF('genre',this.value)"><option value="">Any</option>${GENRES.map((g) => `<option ${F.genre === g ? "selected" : ""}>${g}</option>`).join("")}</select></div>
+      <div><label>Language</label><select aria-label="Filter by language" onchange="R.setF('lang',this.value)"><option value="">Any</option>${LANGUAGES.map((l) => `<option ${F.lang === l ? "selected" : ""}>${l}</option>`).join("")}</select></div>
     </div>
     <label><input type="checkbox" style="width:auto" ${F.collab ? "checked" : ""} onchange="R.setF('collab',this.checked)"> Only open to collaboration</label>
     <p class="small dim">Try: Hindi romantic lyricists open to collab → domain Lyricist + language Hindi + ☑ collab.</p></div>
@@ -686,7 +877,7 @@ function creatorsView() {
   <div class="rail">${feat.map(creatorCard).join("") || `<p class="muted small">No creators yet.</p>`}</div>
   <div class="glass"><h3 style="margin-top:0">🎙 Explore creators</h3>
     <div class="row"><input id="cfQ" class="grow" placeholder="Name, city, vibe…" value="${esc(CF.q)}" oninput="R.setCF(this.value)">
-    <select style="max-width:190px" onchange="R.setCFd(this.value)"><option value="">All domains</option>${DOMAINS.map((d) => `<option value="${d}" ${CF.domain === d ? "selected" : ""}>${DOMAIN_LABEL[d]}</option>`).join("")}</select></div>
+    <select aria-label="Filter creators by domain" style="max-width:190px" onchange="R.setCFd(this.value)"><option value="">All domains</option>${DOMAINS.map((d) => `<option value="${d}" ${CF.domain === d ? "selected" : ""}>${DOMAIN_LABEL[d]}</option>`).join("")}</select></div>
     <p class="small dim">${users.length} creators · ranked by all-time track score.</p></div>
   <div class="rail" style="flex-wrap:wrap">${users.map(creatorCard).join("") || `<p class="muted small">No matches.</p>`}</div>`;
 }
@@ -698,28 +889,28 @@ function boardsView() {
   const title = B.scope === "national" ? `National ${DOMAIN_LABEL[B.domain]} Championship` : `${B.scope === "mystate" ? myState() : B.state} · Top ${DOMAIN_LABEL[B.domain]}s`;
   return `<div class="glass"><h3 style="margin-top:0">🏆 Leaderboards</h3>
     <div class="grid2">
-      <div><label>Domain (never mixed)</label><select onchange="R.setB('domain',this.value)">${DOMAINS.map((d) => `<option value="${d}" ${B.domain === d ? "selected" : ""}>${DOMAIN_LABEL[d]}</option>`).join("")}</select></div>
-      <div><label>Period</label><select onchange="R.setB('period',this.value)">${Object.keys(PERIODS).map((k) => `<option value="${k}" ${B.period === k ? "selected" : ""}>${PERIOD_LABEL[k]}</option>`).join("")}</select></div>
-      <div><label>Scope</label><select onchange="R.setB('scope',this.value)">
+      <div><label>Domain (never mixed)</label><select aria-label="Leaderboard domain" onchange="R.setB('domain',this.value)">${DOMAINS.map((d) => `<option value="${d}" ${B.domain === d ? "selected" : ""}>${DOMAIN_LABEL[d]}</option>`).join("")}</select></div>
+      <div><label>Period</label><select aria-label="Leaderboard period" onchange="R.setB('period',this.value)">${Object.keys(PERIODS).map((k) => `<option value="${k}" ${B.period === k ? "selected" : ""}>${PERIOD_LABEL[k]}</option>`).join("")}</select></div>
+      <div><label>Scope</label><select aria-label="Leaderboard scope" onchange="R.setB('scope',this.value)">
         <option value="mystate" ${B.scope === "mystate" ? "selected" : ""}>My state (${esc(myState())})</option>
         <option value="state" ${B.scope === "state" ? "selected" : ""}>Pick a state…</option>
         <option value="national" ${B.scope === "national" ? "selected" : ""}>National finals (top 3 per state)</option>
       </select></div>
-      ${B.scope === "state" ? `<div><label>State</label><select onchange="R.setB('state',this.value)">${REGIONS.map((r) => `<option ${B.state === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>` : ""}
+      ${B.scope === "state" ? `<div><label>State</label><select aria-label="Leaderboard state" onchange="R.setB('state',this.value)">${REGIONS.map((r) => `<option ${B.state === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>` : ""}
     </div>
     <p class="small dim">Score = upvotes − downvotes on that artist's ${DOMAIN_LABEL[B.domain].toLowerCase()} posts, counting only votes cast in the selected period. One vote per user per post, no self-votes.</p></div>
     <div class="glass"><h3 style="margin-top:0">${esc(title)} · ${PERIOD_LABEL[B.period]}</h3>
     ${rows.length ? `
     <div class="podium">${rows.slice(0, 3).map((r, i) => `<div class="pod ${i === 0 ? "first" : ""}">
       <div class="medal">${i === 0 ? "🥇" : i === 1 ? "🥈" : "🥉"}</div>
-      ${ava(r.u.username)}<b><a onclick="R.viewUser('${r.u.id}')">${esc(r.u.username)}</a>${r.u.id === ME ? " (you)" : ""}</b>
+      ${ava(r.u.username)}<b><button type="button" class="lnk" onclick="R.viewUser('${r.u.id}')">${esc(r.u.username)}</button>${r.u.id === ME ? " (you)" : ""}</b>
       <span class="small dim">${esc(B.scope === "national" ? r.fromState : r.u.city)}</span>
       <div class="sc">${r.score}</div>
       ${B.scope !== "national" ? `<span class="badge hot">national qualifier</span>` : ""}
     </div>`).join("")}</div>
     <table><tr><th>#</th><th>Artist</th><th>${B.scope === "national" ? "Qualified from" : "City"}</th><th>Score</th></tr>
       ${rows.slice(0, 20).map((r, i) => `<tr><td>${i + 1}</td>
-      <td><a onclick="R.viewUser('${r.u.id}')">${esc(r.u.username)}</a>${r.u.id === ME ? " (you)" : ""}</td>
+      <td><button type="button" class="lnk" onclick="R.viewUser('${r.u.id}')">${esc(r.u.username)}</button>${r.u.id === ME ? " (you)" : ""}</td>
       <td>${esc(B.scope === "national" ? r.fromState : r.u.city)}</td><td><b>${r.score}</b></td></tr>`).join("")}</table>` : `<p class="muted">Not enough activity yet — be the first to post and get voted!</p>`}
     </div>`;
 }
@@ -760,12 +951,12 @@ function projectView(id) {
       <div class="card"><h3 style="margin-top:0">📁 Shared files</h3>
         ${p.files.map((f) => { const u = userById(f.userId); return `<div class="small">📄 <b>${esc(f.name)}</b> <span class="dim">· ${esc(u ? u.username : "?")} · ${timeAgo(f.ts)}</span></div>`; }).join("") || `<p class="small dim">No files yet.</p>`}
         ${done ? "" : `<div class="row" style="margin-top:8px"><input id="wsFileInput" class="grow" placeholder="File name, e.g. chorus-take2.mp3"><button class="btn small ghost" onclick="R.addFile('${p.id}')">+ Add</button></div>
-        <label>Attach one of your posts</label><div class="row"><select id="wsAttachSel" class="grow">${DB.posts.filter((x) => x.userId === ME).map((x) => `<option value="${x.id}">${esc(x.title)} (${DOMAIN_LABEL[x.domain]})</option>`).join("") || "<option value=''>No posts yet</option>"}</select><button class="btn small ghost" onclick="R.attachPost('${p.id}')">Attach</button></div>`}
+        <label>Attach one of your posts</label><div class="row"><select id="wsAttachSel" class="grow" aria-label="Choose one of your posts to attach">${DB.posts.filter((x) => x.userId === ME).map((x) => `<option value="${x.id}">${esc(x.title)} (${DOMAIN_LABEL[x.domain]})</option>`).join("") || "<option value=''>No posts yet</option>"}</select><button class="btn small ghost" onclick="R.attachPost('${p.id}')">Attach</button></div>`}
       </div>
     </div>
-    ${done ? `<div class="card"><p class="muted">✅ Completed${p.jointPostId ? ` — published as a <a onclick="R.go('home')">joint post</a>.` : "."} Great work!</p></div>` : `
+    ${done ? `<div class="card"><p class="muted">✅ Completed${p.jointPostId ? ` — published as a <button type="button" class="lnk" onclick="R.go('home')">joint post</button>.` : "."} Great work!</p></div>` : `
     <div class="card"><div class="row"><label style="margin:0">Status</label>
-      <select id="wsStatusSel" style="max-width:200px" onchange="R.setStatus('${p.id}',this.value)">${["in-progress", "awaiting-review", "completed", "cancelled"].map((s) => `<option ${p.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+      <select id="wsStatusSel" aria-label="Project status" style="max-width:200px" onchange="R.setStatus('${p.id}',this.value)">${["in-progress", "awaiting-review", "completed", "cancelled"].map((s) => `<option ${p.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
       <button class="btn small" onclick="R.completeProject('${p.id}')">Mark completed & publish joint post</button></div>
       <p class="small dim">Completing publishes one joint post crediting every member (needs no further clicks) and adds to everyone's collab history. Commercial release = agree your ownership split first (lyrics ≠ composition ≠ recording).</p></div>`}`;
 }
@@ -773,10 +964,10 @@ function projectView(id) {
 // ----- auctions -----
 function auctionsView() {
   if (VIEW_AUCTION) return auctionDetail(VIEW_AUCTION);
-  const live = DB.auctions.filter((a) => a.status === "live").sort((a, b) => (topBid(b)?.amount || b.startPrice) - (topBid(a)?.amount || a.startPrice));
+  const live = DB.auctions.filter((a) => a.status === "live").sort((a, b) => (topBid(b.bids)?.amount || b.startPrice) - (topBid(a.bids)?.amount || a.startPrice));
   const past = DB.auctions.filter((a) => a.status !== "live");
   const card = (a) => {
-    const s = userById(a.sellerId), p = postById(a.postId), top = topBid(a);
+    const s = userById(a.sellerId), p = postById(a.postId), top = topBid(a.bids);
     return `<div class="post"><b>${esc(a.title)}</b> <span class="badge">${esc(a.rights)}</span>
       <div class="pmeta">by ${esc(s ? s.username : "?")} · ${a.bids.length} bids · <span class="timer" data-ends="${a.endsAt}">…</span></div>
       <p class="small muted" style="margin:4px 0">${esc(a.desc)}</p>
@@ -791,7 +982,7 @@ function auctionsView() {
 function auctionDetail(id) {
   const a = DB.auctions.find((x) => x.id === id);
   if (!a) { VIEW_AUCTION = null; return auctionsView(); }
-  const s = userById(a.sellerId), p = postById(a.postId), top = topBid(a);
+  const s = userById(a.sellerId), p = postById(a.postId), top = topBid(a.bids);
   const tx = DB.transactions.find((t) => t.auctionId === a.id);
   return `<button class="btn small ghost" onclick="R.openAuction(null)">← All auctions</button>
   <div class="card"><h2 style="margin:0">${esc(a.title)}</h2>
@@ -916,62 +1107,71 @@ function modalHtml() {
   if (!MODAL) return "";
   let inner = "";
   if (MODAL.kind === "post") {
-    inner = `<h3 style="margin-top:0">＋ Create post</h3>
-      <label>Your domain for this post</label><select id="npDom">${me().domains.map((d) => `<option value="${d}">${DOMAIN_LABEL[d]}</option>`).join("")}</select>
-      <label>Title</label><input id="npTitle" placeholder="e.g. Midnight Drive">
-      <label>Description</label><input id="npDesc" placeholder="What is this? Who do you want to work with?">
-      <div class="grid2"><div><label>Genre</label><select id="npGenre">${GENRES.map((g) => `<option>${g}</option>`).join("")}</select></div>
-      <div><label>Language</label><select id="npLang">${LANGUAGES.map((l) => `<option>${l}</option>`).join("")}</select></div></div>
-      <div id="npLyricWrap"><label>Lyrics / text</label><textarea id="npBody" placeholder="Paste your lyrics, verse, hook…"></textarea></div>
-      <div class="grid2"><div><label>BPM (beats)</label><input id="npBpm" type="number" placeholder="e.g. 140"></div>
-      <div><label>Key (beats)</label><input id="npKey" placeholder="e.g. D minor"></div></div>
-      <div><label>Instrument (instrumentalists)</label><input id="npInst" placeholder="e.g. Guitar"></div>
-      <label>Tags (comma separated)</label><input id="npTags" placeholder="sad, hook, demo">
+    inner = `<h3 id="modalTitle" style="margin-top:0">＋ Create post</h3>
+      <label for="npDom">Your domain for this post</label><select id="npDom">${me().domains.map((d) => `<option value="${d}">${DOMAIN_LABEL[d]}</option>`).join("")}</select>
+      <label for="npTitle">Title</label><input id="npTitle" maxlength="80" placeholder="e.g. Midnight Drive">
+      <label for="npDesc">Description</label><input id="npDesc" maxlength="300" placeholder="What is this? Who do you want to work with?">
+      <div class="grid2"><div><label for="npGenre">Genre</label><select id="npGenre">${GENRES.map((g) => `<option>${g}</option>`).join("")}</select></div>
+      <div><label for="npLang">Language</label><select id="npLang">${LANGUAGES.map((l) => `<option>${l}</option>`).join("")}</select></div></div>
+      <div id="npLyricWrap"><label for="npBody">Lyrics / text</label><textarea id="npBody" maxlength="5000" placeholder="Paste your lyrics, verse, hook…"></textarea></div>
+      <div class="grid2"><div><label for="npBpm">BPM (beats)</label><input id="npBpm" type="number" min="20" max="300" placeholder="e.g. 140"></div>
+      <div><label for="npKey">Key (beats)</label><input id="npKey" maxlength="20" placeholder="e.g. D minor"></div></div>
+      <div><label for="npInst">Instrument (instrumentalists)</label><input id="npInst" maxlength="40" placeholder="e.g. Guitar"></div>
+      <label for="npTags">Tags (comma separated)</label><input id="npTags" maxlength="120" placeholder="sad, hook, demo">
       <label><input type="checkbox" id="npCollab" style="width:auto" checked> Available for collaboration</label>
       <label><input type="checkbox" id="npAuc" style="width:auto" checked> Eligible for auction / licensing later</label>
       <div class="row" style="margin-top:12px"><button class="btn" onclick="R.createPost()">Publish</button><button class="btn ghost" onclick="R.closeModal()">Cancel</button></div>`;
   } else if (MODAL.kind === "collab") {
     const p = postById(MODAL.postId);
     const mine = DB.posts.filter((x) => x.userId === ME);
-    inner = `<h3 style="margin-top:0">🤝 Request collaboration</h3>
+    if (!p) {
+      inner = `<h3 id="modalTitle" style="margin-top:0">Post unavailable</h3><p class="small muted">This post was removed. Close this dialog and pick another work.</p>`;
+    } else {
+      inner = `<h3 id="modalTitle" style="margin-top:0">🤝 Request collaboration</h3>
       <p class="small muted">To: <b>${esc((userById(p.userId) || {}).username)}</b> · Re: <b>${esc(p.title)}</b></p>
-      <label>Message</label><input id="crMsg" placeholder="I really like your work…">
-      <label>Why do you want to collaborate?</label><input id="crReason" placeholder="e.g. my piano fits these lyrics">
-      <label>Your proposed role</label><select id="crRole">${me().domains.map((d) => `<option value="${DOMAIN_LABEL[d]}">${DOMAIN_LABEL[d]}</option>`).join("")}</select>
+      <label>Message</label><input id="crMsg" maxlength="300" placeholder="I really like your work…">
+      <label>Why do you want to collaborate?</label><input id="crReason" maxlength="300" placeholder="e.g. my piano fits these lyrics">
+      <label>Your proposed role</label><select id="crRole" aria-label="Your proposed role">${me().domains.map((d) => `<option value="${DOMAIN_LABEL[d]}">${DOMAIN_LABEL[d]}</option>`).join("")}</select>
       <label>Attach a sample of your work (required — show, don't just tell)</label>
-      <select id="crAttach">${mine.map((x) => `<option value="${x.id}">${esc(x.title)} (${DOMAIN_LABEL[x.domain]})</option>`).join("") || "<option value=''>You have no posts yet — publish one first</option>"}</select>
+      <select id="crAttach" aria-label="Attach one of your posts as a work sample">${mine.map((x) => `<option value="${x.id}">${esc(x.title)} (${DOMAIN_LABEL[x.domain]})</option>`).join("") || "<option value=''>You have no posts yet — publish one first</option>"}</select>
       <div class="row" style="margin-top:12px"><button class="btn" onclick="R.sendRequest('${p.id}')">Send request</button><button class="btn ghost" onclick="R.closeModal()">Cancel</button></div>`;
+    }
   } else if (MODAL.kind === "auction") {
-    inner = `<h3 style="margin-top:0">🔨 Create auction</h3>
-      <label>Auction title</label><input id="acTitle" value="${esc(MODAL.title || "")}">
-      <label>Description</label><input id="acDesc" placeholder="Stems included? Credit terms?">
-      <div class="grid2"><div><label>Starting price (₹)</label><input id="acStart" type="number" value="500"></div>
-      <div><label>Reserve price (₹, 0 = none)</label><input id="acReserve" type="number" value="0"></div></div>
-      <div class="grid2"><div><label>Duration (hours)</label><input id="acDur" type="number" value="72"></div>
-      <div><label>Rights offered</label><select id="acRights"><option>Exclusive ownership</option><option>Non-exclusive license</option><option>Limited lease (1 yr)</option></select></div></div>
-      <label>Ownership declaration</label><input id="acOwn" placeholder="e.g. 100% original, I own all rights">
+    inner = `<h3 id="modalTitle" style="margin-top:0">🔨 Create auction</h3>
+      <label for="acTitle">Auction title</label><input id="acTitle" maxlength="100" value="${esc(MODAL.title || "")}">
+      <label for="acDesc">Description</label><input id="acDesc" maxlength="500" placeholder="Stems included? Credit terms?">
+      <div class="grid2"><div><label for="acStart">Starting price (₹)</label><input id="acStart" type="number" min="1" value="500"></div>
+      <div><label for="acReserve">Reserve price (₹, 0 = none)</label><input id="acReserve" type="number" min="0" value="0"></div></div>
+      <div class="grid2"><div><label for="acDur">Duration (hours)</label><input id="acDur" type="number" min="1" max="720" value="72"></div>
+      <div><label for="acRights">Rights offered</label><select id="acRights" aria-label="Rights offered"><option>Exclusive ownership</option><option>Non-exclusive license</option><option>Limited lease (1 yr)</option></select></div></div>
+      <label for="acOwn">Ownership declaration</label><input id="acOwn" maxlength="300" placeholder="e.g. 100% original, I own all rights">
       <div class="row" style="margin-top:12px"><button class="btn" onclick="R.createAuction('${MODAL.postId}')">Start auction</button><button class="btn ghost" onclick="R.closeModal()">Cancel</button></div>`;
   } else if (MODAL.kind === "playlist") {
-    inner = `<h3 style="margin-top:0">🎧 New playlist</h3>
-      <label>Playlist name</label><input id="plName" placeholder="e.g. Late night writing">
+    inner = `<h3 id="modalTitle" style="margin-top:0">🎧 New playlist</h3>
+      <label for="plName">Playlist name</label><input id="plName" maxlength="60" placeholder="e.g. Late night writing">
       ${MODAL.seed && !MODAL.seed.startsWith("__") ? `<p class="small dim">Will start with: <b>${esc((postById(MODAL.seed) || {}).title || "")}</b></p>` : ""}
       <div class="row" style="margin-top:12px"><button class="btn" onclick="R.createPlaylist()">Create</button><button class="btn ghost" onclick="R.closeModal()">Cancel</button></div>`;
   } else if (MODAL.kind === "picklist") {
     const target = MODAL.target === "__current" ? QUEUE[QIDX] : MODAL.target;
-    inner = `<h3 style="margin-top:0">＋ Add to playlist</h3>
+    inner = `<h3 id="modalTitle" style="margin-top:0">＋ Add to playlist</h3>
       <p class="small dim">Adding: <b>${esc((postById(target) || {}).title || "current track")}</b></p>
       ${(me().playlists || []).map((pl) => `<div class="row" style="margin:6px 0"><b class="grow">${esc(pl.name)}</b><span class="small dim">${pl.postIds.length} tracks</span><button class="chip" onclick="R.addToPlaylist('${pl.id}')">＋ Add</button></div>`).join("")}
       <div class="row" style="margin-top:12px"><button class="btn ghost" onclick="R.openPlaylistModal('${esc(MODAL.target || "")}')">＋ New playlist</button><button class="btn ghost" onclick="R.closeModal()">Cancel</button></div>`;
   } else if (MODAL.kind === "report") {
-    inner = `<h3 style="margin-top:0">⚑ Report post</h3>
-      <label>Reason</label><select id="repReason"><option>Copyright / plagiarism</option><option>Offensive content</option><option>Spam / scam</option><option>Other</option></select>
+    inner = `<h3 id="modalTitle" style="margin-top:0">⚑ Report post</h3>
+      <label for="repReason">Reason</label><select id="repReason" aria-label="Reason for report"><option>Copyright / plagiarism</option><option>Offensive content</option><option>Spam / scam</option><option>Other</option></select>
       <div class="row" style="margin-top:12px"><button class="btn" onclick="R.sendReport('${MODAL.postId}')">Submit report</button><button class="btn ghost" onclick="R.closeModal()">Cancel</button></div>`;
   }
-  return `<div class="modal" onclick="if(event.target===this)R.closeModal()"><div class="modalBox">${inner}</div></div>`;
+  return `<div class="modal" onclick="if(event.target===this)R.closeModal()"><div class="modalBox" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1"><button type="button" class="modalClose" aria-label="Close dialog" onclick="R.closeModal()">✕</button>${inner}</div></div>`;
 }
 
 // ============================ ACTIONS ============================
-function needAuth() { if (me() && me().suspended) { toast("Account suspended."); return true; } return false; }
+function needAuth() {
+  const u = me();
+  if (!u) { toast("Please sign in first."); return true; }
+  if (u.suspended) { toast("Account suspended."); return true; }
+  return false;
+}
 
 export function setAuth(m) { AUTH_MODE = m; SIGNUP_DOMAINS = ["lyricist"]; render(); }
 export function fakeRecovery() { toast("Demo: passwords can't be emailed. Use rahul@demo.in / demo."); }
@@ -985,33 +1185,64 @@ export function toggleDom(d) {
 }
 
 export async function signup() {
-  const v = (id) => document.getElementById(id).value.trim();
-  const name = v("suNameInput"), username = v("suUserInput"), email = v("suEmailInput");
-  const p1 = document.getElementById("suPassInput").value, p2 = document.getElementById("suPass2Input").value;
+  const val = (id) => (document.getElementById(id)?.value || "").trim();
+  const raw = (id) => (document.getElementById(id)?.value || "");
+  const name = val("suNameInput"), username = val("suUserInput"), email = val("suEmailInput");
+  const dob = val("suDobInput"), city = val("suCityInput"), bio = val("suBioInput");
+  const p1 = raw("suPassInput"), p2 = raw("suPass2Input");
   if (!name || !username || !email || !p1) return toast("Fill all required fields.");
+  if (name.length > 60) return toast("Name is too long (max 60 characters).");
+  if (!/^[a-z0-9_.-]{3,24}$/i.test(username)) return toast("Username must be 3–24 letters, numbers, dots, dashes or underscores.");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 120) return toast("Enter a valid email address.");
   if (p1 !== p2) return toast("Passwords don't match.");
   if (p1.length < 8) return toast("Password must be at least 8 characters.");
-  if (DB.users.some((u) => u.username.toLowerCase() === username.toLowerCase())) return toast("Username taken.");
-  if (DB.users.some((u) => u.email.toLowerCase() === email.toLowerCase())) return toast("Email already registered.");
-  const primary = document.getElementById("suPrimaryInput").value;
-  const u = { id: uid("u"), name, username, email, pass: await sha256(p1), pic: "", dob: v("suDobInput"), state: v("suStateInput"), city: v("suCityInput") || "—", bio: v("suBioInput"), domains: SIGNUP_DOMAINS.slice(), primary, suspended: false, admin: false, createdAt: Date.now() };
-  DB.users.push(u); save();
-  ME = u.id; setSession(ME); TAB = "dash";
-  notify(ME, "Welcome to RHYTHM! Publish your first post to enter your state leaderboard.", "info"); save();
-  render(); toast(`Welcome, ${username}!`);
+  if (p1.length > 200) return toast("Password is too long (max 200 characters).");
+  if (!dob || !Number.isFinite(Date.parse(dob))) return toast("Enter your date of birth.");
+  const age = (Date.now() - Date.parse(dob)) / (365.25 * 86400000);
+  if (age < 13) return toast("You must be at least 13 years old to create an account.");
+  if (age > 120) return toast("Please check the date of birth you entered.");
+  if (bio.length > 300) return toast("Bio is too long (max 300 characters).");
+  if (city.length > 60) return toast("City name is too long.");
+  if (DB.users.some((u) => (u.username || "").toLowerCase() === username.toLowerCase())) return toast("Username taken.");
+  if (DB.users.some((u) => (u.email || "").toLowerCase() === email.toLowerCase())) return toast("Email already registered.");
+  const primarySel = document.getElementById("suPrimaryInput");
+  const primary = primarySel && SIGNUP_DOMAINS.includes(primarySel.value) ? primarySel.value : SIGNUP_DOMAINS[0];
+  const u = {
+    id: uid("u"), name, username, email, pass: await hashPassword(p1), pic: "", dob, city: city || "—",
+    state: val("suStateInput") || REGIONS[0], bio, domains: SIGNUP_DOMAINS.slice(), primary,
+    suspended: false, admin: false, createdAt: Date.now(),
+  };
+  DB.users.push(u);
+  ME = u.id;
+  setSession(ME);
+  resetUiState();
+  B.state = myState();
+  notify(ME, "Welcome to RHYTHM! Publish your first post to enter your state leaderboard.", "info");
+  save(); render(); setHash("#/dash");
+  toast(`Welcome, ${username}!`);
 }
 
 const LOCK_KEY = "rhythm_login_lock_v1";
 function lockInfo() { try { return JSON.parse(localStorage.getItem(LOCK_KEY)) || { fails: 0, until: 0 }; } catch (e) { return { fails: 0, until: 0 }; } }
-function setLock(o) { localStorage.setItem(LOCK_KEY, JSON.stringify(o)); }
+function setLock(o) { try { localStorage.setItem(LOCK_KEY, JSON.stringify(o)); } catch (e) { /* ignore */ } }
 
 export async function login() {
   const lock = lockInfo();
   if (Date.now() < lock.until) return toast(`Too many attempts. Try again in ${Math.ceil((lock.until - Date.now()) / 1000)}s.`);
-  const id = document.getElementById("liIdInput").value.trim().toLowerCase();
-  const pw = await sha256(document.getElementById("liPassInput").value);
-  const u = DB.users.find((x) => (x.email.toLowerCase() === id || x.username.toLowerCase() === id) && x.pass === pw);
-  if (!u) {
+  const id = (document.getElementById("liIdInput")?.value || "").trim().toLowerCase();
+  const pw = document.getElementById("liPassInput")?.value || "";
+  if (!id || !pw) return toast("Enter your email/username and password.");
+  const u = DB.users.find((x) => (x.email || "").toLowerCase() === id || (x.username || "").toLowerCase() === id);
+  let valid = false;
+  if (u) {
+    const res = await verifyPassword(pw, u.pass);
+    valid = res.ok;
+    if (valid && res.needsUpgrade) {
+      u.pass = await hashPassword(pw);
+      save();
+    }
+  }
+  if (!valid) {
     const f = lockInfo();
     f.fails++;
     if (f.fails >= 5) { f.until = Date.now() + 60000; f.fails = 0; toast("Too many failed attempts. Locked for 60s."); }
@@ -1021,13 +1252,34 @@ export async function login() {
   }
   if (u.suspended) return toast("This account is suspended. Contact an admin.");
   setLock({ fails: 0, until: 0 });
-  ME = u.id; setSession(ME); TAB = "dash"; VIEW_USER = null; VIEW_PROJECT = null; VIEW_AUCTION = null;
-  render(); toast(`Welcome back, ${u.username}!`);
+  ME = u.id;
+  setSession(ME);
+  resetUiState();
+  B.state = myState();
+  render(); setHash("#/dash");
+  toast(`Welcome back, ${u.username}!`);
 }
-export function logout() { stopPreview(); QUEUE = []; QIDX = -1; ME = null; setSession(null); TAB = "dash"; render(); }
-export function resetDemo() { stopPreview(); QUEUE = []; QIDX = -1; wipeDB(); ME = null; setSession(null); boot(); }
 
-export function go(t, skipHash) { if (t === "__signin") { TAB = "home"; EXPANDED = null; render(); setHash(""); return; } TAB = t; if (t !== "collabs") VIEW_PROJECT = null; if (t !== "auctions") VIEW_AUCTION = null; if (t !== "msgs") VIEW_THREAD = null; if (t !== "profile") VIEW_USER = null; EXPANDED = null; render(); if (!skipHash) setHash("#/" + t); }
+export function logout() {
+  stopPreview();
+  ME = null;
+  setSession(null);
+  resetUiState();
+  render(); setHash("");
+}
+
+export function resetDemo() {
+  if (!confirm("Reset the demo? This erases every account, post, vote and message stored in this browser, then reloads.")) return;
+  stopPreview();
+  wipeDB();
+  try { localStorage.removeItem(SESSION_KEY); localStorage.removeItem(LOCK_KEY); } catch (e) { /* ignore */ }
+  ME = null;
+  resetUiState();
+  location.hash = "";
+  location.reload();
+}
+
+export function go(t, skipHash) { if (t === "__signin") { AUTH_MODE = "in"; TAB = "home"; EXPANDED = null; render(); setHash(""); return; } TAB = t; if (t !== "collabs") VIEW_PROJECT = null; if (t !== "auctions") VIEW_AUCTION = null; if (t !== "msgs") VIEW_THREAD = null; if (t !== "profile") VIEW_USER = null; EXPANDED = null; render(); if (!skipHash) setHash("#/" + t); }
 export function nav(k) { if (k === "__create") { openPostModal(); return; } go(k); }
 export function topSearch(v) {
   F.q = v; TAB = "explore"; EXPANDED = null; render();
@@ -1046,9 +1298,26 @@ export function viewUser(id) { VIEW_USER = id === ME ? null : id; TAB = "profile
 export function toggleExpand(id) { EXPANDED = EXPANDED === id ? null : id; render(); }
 export function closeModal() { MODAL = null; render(); }
 export function openPostModal() { if (needAuth()) return; MODAL = { kind: "post" }; render(); }
-export function openCollab(postId) { if (needAuth()) return; MODAL = { kind: "collab", postId }; render(); }
-export function openAuctionCreate(postId) { const p = postById(postId); MODAL = { kind: "auction", postId, title: p.title + " — rights for sale" }; render(); }
-export function openReport(postId) { MODAL = { kind: "report", postId }; render(); }
+export function openCollab(postId) {
+  if (needAuth()) return;
+  const p = postById(postId);
+  if (!p) return toast("That post no longer exists.");
+  if (p.userId === ME) return toast("You can't collaborate with yourself.");
+  MODAL = { kind: "collab", postId }; render();
+}
+export function openAuctionCreate(postId) {
+  if (needAuth()) return;
+  const p = postById(postId);
+  if (!p || p.userId !== ME) return toast("You can only auction your own work.");
+  MODAL = { kind: "auction", postId, title: p.title + " — rights for sale" }; render();
+}
+export function openReport(postId) {
+  if (needAuth()) return;
+  const p = postById(postId);
+  if (!p) return toast("That post no longer exists.");
+  if (p.userId === ME) return toast("You can't report your own post.");
+  MODAL = { kind: "report", postId }; render();
+}
 export function openProject(id) { VIEW_PROJECT = id; render(); }
 export function openAuction(id) { VIEW_AUCTION = id; render(); }
 export function openThread(id) { VIEW_THREAD = id; render(); }
@@ -1107,9 +1376,11 @@ export function vote(postId, val) {
 export function comment(postId) {
   if (needAuth()) return;
   const el = document.getElementById("cmt-" + postId);
-  const t = el.value.trim();
+  const t = (el?.value || "").trim();
   if (!t) return;
+  if (t.length > 500) return toast("Comment is too long (max 500 characters).");
   const p = postById(postId);
+  if (!p) return;
   p.comments.push({ u: ME, text: t, ts: Date.now() });
   notify(p.userId, `${me().username} commented on “${p.title}”.`, "comment");
   save(); render();
@@ -1117,30 +1388,42 @@ export function comment(postId) {
 
 export function share(postId) {
   const p = postById(postId);
-  const link = `https://perchance.org/${window.generatorName || "rhythm"}#post-${postId}`;
-  if (navigator.clipboard) navigator.clipboard.writeText(link).catch(() => {});
-  toast("Share link copied: " + link);
+  if (!p) return toast("That post no longer exists.");
+  const link = `${location.origin}${location.pathname}#/post-${postId}`;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).then(
+      () => toast("Share link copied: " + link),
+      () => toast("Share link: " + link)
+    );
+  } else {
+    toast("Share link: " + link);
+  }
 }
 
 export function createPost() {
   if (needAuth()) return;
-  const g = (id) => document.getElementById(id).value.trim();
-  const domain = document.getElementById("npDom").value;
+  const g = (id) => (document.getElementById(id)?.value || "").trim();
+  const domain = document.getElementById("npDom")?.value || "";
+  if (!me().domains.includes(domain)) return toast("Pick one of your creative domains.");
   const title = g("npTitle");
   if (!title) return toast("Give your work a title.");
-  if (domain === "lyricist" && !g("npBody")) return toast("Lyrics text is required for lyricist posts.");
+  if (title.length > 80) return toast("Title is too long (max 80 characters).");
+  if (g("npDesc").length > 300) return toast("Description is too long (max 300 characters).");
+  const body = domain === "lyricist" ? g("npBody") : "";
+  if (domain === "lyricist" && !body) return toast("Lyrics text is required for lyricist posts.");
+  if (body.length > 5000) return toast("Lyrics are too long (max 5,000 characters).");
+  const bpm = g("npBpm") ? +g("npBpm") : undefined;
+  if (bpm !== undefined && (!Number.isFinite(bpm) || bpm < 20 || bpm > 300)) return toast("BPM must be between 20 and 300.");
+  const tags = g("npTags").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 8);
   const p = {
     id: uid("p"), userId: ME, domain, title,
     desc: g("npDesc"), genre: g("npGenre"), language: g("npLang"),
-    body: domain === "lyricist" ? g("npBody") : "",
+    body,
     audioSeed: title.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-    bpm: g("npBpm") ? +g("npBpm") : undefined,
-    key: g("npKey") || undefined,
-    instrument: g("npInst") || undefined,
-    duration: "demo",
-    tags: g("npTags").split(",").map((t) => t.trim()).filter(Boolean),
-    collabOpen: document.getElementById("npCollab").checked,
-    auctionEligible: document.getElementById("npAuc").checked,
+    bpm, key: g("npKey") || undefined, instrument: g("npInst") || undefined,
+    duration: "demo", tags,
+    collabOpen: Boolean(document.getElementById("npCollab")?.checked),
+    auctionEligible: Boolean(document.getElementById("npAuc")?.checked),
     comments: [], votes: [], createdAt: Date.now(),
   };
   DB.posts.unshift(p); MODAL = null; save(); TAB = "home"; EXPANDED = p.id; render();
@@ -1148,21 +1431,30 @@ export function createPost() {
 }
 
 export function deletePost(postId) {
+  if (needAuth()) return;
+  const p = postById(postId);
+  if (!p) return;
+  if (p.userId !== ME && !isAdmin()) return toast("You can only delete your own posts.");
   if (!confirm("Delete this post? Its votes leave the leaderboard.")) return;
-  DB.posts = DB.posts.filter((p) => p.id !== postId);
+  DB.posts = DB.posts.filter((x) => x.id !== postId);
   save(); render(); toast("Post deleted.");
 }
 
 export function sendRequest(postId) {
   if (needAuth()) return;
   const p = postById(postId);
+  if (!p) return toast("That post no longer exists.");
+  if (p.userId === ME) return toast("You can't send a collaboration request to yourself.");
+  if (DB.collabRequests.some((r) => r.fromId === ME && r.toId === p.userId && r.postId === postId && r.status === "pending")) {
+    return toast("You already have a pending request for this post.");
+  }
   const attach = document.getElementById("crAttach").value;
   if (!attach) return toast("Attach one of your works as a sample first.");
   DB.collabRequests.push({
     id: uid("cr"), fromId: ME, toId: p.userId, postId,
     attachPostId: attach,
-    message: document.getElementById("crMsg").value.trim() || "I'd love to collaborate!",
-    reason: document.getElementById("crReason").value.trim(),
+    message: (document.getElementById("crMsg")?.value || "").trim().slice(0, 300) || "I'd love to collaborate!",
+    reason: (document.getElementById("crReason")?.value || "").trim().slice(0, 300),
     role: document.getElementById("crRole").value,
     status: "pending", createdAt: Date.now(),
   });
@@ -1172,7 +1464,9 @@ export function sendRequest(postId) {
 }
 
 export function acceptReq(id) {
+  if (needAuth()) return;
   const r = DB.collabRequests.find((x) => x.id === id);
+  if (!r || r.toId !== ME || r.status !== "pending") return toast("This request is not yours to accept.");
   r.status = "accepted";
   const p = postById(r.postId);
   const from = userById(r.fromId);
@@ -1191,46 +1485,70 @@ export function acceptReq(id) {
 }
 
 export function rejectReq(id) {
+  if (needAuth()) return;
   const r = DB.collabRequests.find((x) => x.id === id);
+  if (!r || r.toId !== ME || r.status !== "pending") return toast("This request is not yours to decline.");
   r.status = "rejected";
   notify(r.fromId, `${me().username} declined your collaboration request.`, "collab");
   save(); render();
 }
 
-export function sendChat(pid) {
-  const el = document.getElementById("wsChatInput");
-  const t = el.value.trim();
-  if (!t) return;
+function projectMember(pid, userId = ME) {
   const p = DB.projects.find((x) => x.id === pid);
+  return p && p.members.some((m) => m.userId === userId) ? p : null;
+}
+
+export function sendChat(pid) {
+  if (needAuth()) return;
+  const p = projectMember(pid);
+  if (!p) return toast("You are not a member of this project.");
+  const el = document.getElementById("wsChatInput");
+  const t = (el?.value || "").trim();
+  if (!t) return;
+  if (t.length > 1000) return toast("Message is too long (max 1,000 characters).");
   p.chat.push({ userId: ME, text: t, ts: Date.now() });
   p.members.filter((m) => m.userId !== ME).forEach((m) => notify(m.userId, `New message in “${p.title}”.`, "message"));
   save(); render();
 }
 
 export function addFile(pid) {
+  if (needAuth()) return;
+  const p = projectMember(pid);
+  if (!p) return toast("You are not a member of this project.");
   const el = document.getElementById("wsFileInput");
-  const t = el.value.trim();
+  const t = (el?.value || "").trim();
   if (!t) return;
-  DB.projects.find((x) => x.id === pid).files.push({ id: uid("f"), userId: ME, name: t, kind: "note", ts: Date.now() });
+  if (t.length > 200) return toast("File note is too long (max 200 characters).");
+  p.files.push({ id: uid("f"), userId: ME, name: t, kind: "note", ts: Date.now() });
   save(); render(); toast("File noted in workspace.");
 }
 
 export function attachPost(pid) {
+  if (needAuth()) return;
+  const p = projectMember(pid);
+  if (!p) return toast("You are not a member of this project.");
   const sel = document.getElementById("wsAttachSel");
   if (!sel || !sel.value) return;
   const src = postById(sel.value);
-  DB.projects.find((x) => x.id === pid).files.push({ id: uid("f"), userId: ME, name: "attached post: " + src.title, kind: "link", ts: Date.now() });
+  if (!src) return toast("Choose one of your posts.");
+  p.files.push({ id: uid("f"), userId: ME, name: "attached post: " + src.title, kind: "link", ts: Date.now() });
   save(); render(); toast("Post attached to workspace.");
 }
 
 export function setStatus(pid, s) {
-  const p = DB.projects.find((x) => x.id === pid);
+  if (needAuth()) return;
+  const p = projectMember(pid);
+  if (!p) return toast("You are not a member of this project.");
+  if (!["in-progress", "awaiting-review", "completed", "cancelled"].includes(s)) return;
   p.status = s; p.updates.push("Status → " + s);
   save(); render();
 }
 
 export function completeProject(pid) {
-  const p = DB.projects.find((x) => x.id === pid);
+  if (needAuth()) return;
+  const p = projectMember(pid);
+  if (!p) return toast("You are not a member of this project.");
+  if (p.status === "completed") return toast("This project is already completed.");
   if (!confirm("Mark completed and publish one joint post crediting all members?")) return;
   p.status = "completed"; p.updates.push("Completed & published");
   const jp = {
@@ -1249,15 +1567,23 @@ export function completeProject(pid) {
 }
 
 export function createAuction(postId) {
-  const g = (id) => document.getElementById(id).value.trim();
+  if (needAuth()) return;
+  const post = postById(postId);
+  if (!post || post.userId !== ME) return toast("You can only auction your own work.");
+  if (DB.auctions.some((a) => a.postId === postId && a.status === "live")) return toast("That post already has a live auction.");
+  const g = (id) => (document.getElementById(id)?.value || "").trim();
   const title = g("acTitle");
   if (!title) return toast("Auction needs a title.");
+  if (title.length > 100) return toast("Auction title is too long (max 100 characters).");
   if (!g("acOwn")) return toast("Ownership declaration is required.");
+  const startPrice = Math.max(1, Math.round(+g("acStart") || 100));
+  const reservePrice = Math.max(0, Math.round(+g("acReserve") || 0));
+  const hours = Math.min(24 * 30, Math.max(1, Math.round(+document.getElementById("acDur").value || 72)));
   DB.auctions.unshift({
-    id: uid("a"), postId, sellerId: ME, title, desc: g("acDesc"),
-    startPrice: +g("acStart") || 100, reservePrice: +g("acReserve") || 0, minInc: 50,
-    startsAt: Date.now(), endsAt: Date.now() + (+document.getElementById("acDur").value || 72) * 3600000,
-    rights: document.getElementById("acRights").value, ownership: g("acOwn"),
+    id: uid("a"), postId, sellerId: ME, title, desc: g("acDesc").slice(0, 500),
+    startPrice, reservePrice, minInc: 50,
+    startsAt: Date.now(), endsAt: Date.now() + hours * 3600000,
+    rights: document.getElementById("acRights").value, ownership: g("acOwn").slice(0, 300),
     status: "live", bids: [],
   });
   MODAL = null; save(); TAB = "auctions"; VIEW_AUCTION = null; render();
@@ -1267,10 +1593,11 @@ export function createAuction(postId) {
 export function bid(auctionId) {
   if (needAuth()) return;
   const a = DB.auctions.find((x) => x.id === auctionId);
-  const amt = +document.getElementById("bidInput").value;
-  const top = topBid(a);
+  if (!a || a.status !== "live" || Date.now() >= a.endsAt) return toast("This auction is closed.");
+  const amt = Math.round(+document.getElementById("bidInput").value);
+  const top = topBid(a.bids);
   const min = (top ? top.amount : a.startPrice) + a.minInc;
-  if (!amt || amt < min) return toast(`Bid at least ₹${min}.`);
+  if (!Number.isFinite(amt) || amt < min) return toast(`Bid at least ₹${min}.`);
   if (a.sellerId === ME) return toast("You can't bid on your own work.");
   if (!confirm(`Confirm binding bid of ₹${amt} on “${a.title}”?`)) return;
   a.bids.push({ userId: ME, amount: amt, ts: Date.now() });
@@ -1280,28 +1607,37 @@ export function bid(auctionId) {
 }
 
 export function sendDM(threadId) {
-  const el = document.getElementById("dmInput");
-  const t = el.value.trim();
-  if (!t) return;
-  DB.threads.find((x) => x.id === threadId).messages.push({ userId: ME, text: t, ts: Date.now() });
+  if (needAuth()) return;
   const th = DB.threads.find((x) => x.id === threadId);
+  if (!th || !th.members.includes(ME)) return toast("You are not part of this conversation.");
+  const el = document.getElementById("dmInput");
+  const t = (el?.value || "").trim();
+  if (!t) return;
+  if (t.length > 1000) return toast("Message is too long (max 1,000 characters).");
+  th.messages.push({ userId: ME, text: t, ts: Date.now() });
   th.members.filter((m) => m !== ME).forEach((m) => notify(m, `${me().username} messaged you.`, "message"));
   save(); render();
 }
 
-export function followUser(id, fromProfile) {
+export function followUser(id) {
+  if (needAuth()) return;
+  if (id === ME) return;
+  const target = userById(id);
+  if (!target) return toast("That creator no longer exists.");
   const u = me();
   u.following = u.following || [];
   if (!u.following.includes(id)) u.following.push(id);
-  const t = userById(id);
   notify(id, `${u.username} started following you.`, "follow");
   save(); render(true);
 }
-export function unfollowUser(id, fromProfile) {
+export function unfollowUser(id) {
+  if (needAuth()) return;
   me().following = (me().following || []).filter((x) => x !== id);
   save(); render(true);
 }
 export function toggleFav(postId, fromPlayer) {
+  if (needAuth()) return;
+  if (!postById(postId)) return;
   const u = me();
   u.favs = u.favs || [];
   const i = u.favs.indexOf(postId);
@@ -1314,18 +1650,22 @@ export function openPlaylistModal(seedPostId) {
   MODAL = { kind: "playlist", seed: seedPostId || "" }; render();
 }
 export function createPlaylist() {
-  const name = document.getElementById("plName").value.trim();
+  if (needAuth()) return;
+  const name = (document.getElementById("plName")?.value || "").trim();
   if (!name) return toast("Name your playlist.");
+  if (name.length > 60) return toast("Playlist name is too long (max 60 characters).");
   const pl = { id: uid("pl"), name, postIds: MODAL.seed && !MODAL.seed.startsWith("__") ? [MODAL.seed] : [] };
   me().playlists.push(pl);
   MODAL = null; save(); TAB = "dash"; render();
   toast(`Playlist “${name}” created.`);
 }
 export function openPickList(targetPostId) {
+  if (needAuth()) return;
   if (!(me().playlists || []).length) { openPlaylistModal(targetPostId); return; }
   MODAL = { kind: "picklist", target: targetPostId }; render();
 }
 export function addToPlaylist(plId) {
+  if (needAuth()) return;
   const postId = MODAL.target === "__current" ? QUEUE[QIDX] : MODAL.target;
   const pl = (me().playlists || []).find((p) => p.id === plId);
   if (pl && postId && !pl.postIds.includes(postId)) pl.postIds.push(postId);
@@ -1333,37 +1673,48 @@ export function addToPlaylist(plId) {
   toast(`Added to “${pl ? pl.name : "playlist"}”.`);
 }
 export function playPlaylist(plId) {
-  const pl = (me().playlists || []).find((p) => p.id === plId);
+  const pl = (me()?.playlists || []).find((p) => p.id === plId);
   if (!pl || !pl.postIds.length) return toast("Playlist is empty — add tracks first.");
   playTrack(pl.postIds[0], pl.postIds.join(","));
 }
 export function removeFromPlaylist(plId, postId) {
+  if (needAuth()) return;
   const pl = (me().playlists || []).find((p) => p.id === plId);
   if (pl) pl.postIds = pl.postIds.filter((x) => x !== postId);
   save(); render(true);
 }
 export function collabWithUser(userId) {
+  if (needAuth()) return;
+  if (userId === ME) return toast("Choose another creator to collaborate with.");
   const p = DB.posts.filter((x) => x.userId === userId && x.collabOpen).sort((a, b) => b.createdAt - a.createdAt)[0];
   if (!p) return toast("This creator has no posts open to collaboration right now.");
   openCollab(p.id);
 }
 export function contactUser(userId) {
+  if (needAuth()) return;
+  if (userId === ME) return;
+  if (!userById(userId)) return toast("That creator no longer exists.");
   let t = DB.threads.find((x) => x.members.includes(ME) && x.members.includes(userId));
   if (!t) { t = { id: uid("th"), members: [ME, userId], messages: [] }; DB.threads.push(t); save(); }
   VIEW_THREAD = t.id; TAB = "msgs"; render();
 }
 
 export function markRead() {
+  if (needAuth()) return;
   DB.notifications.forEach((n) => { if (n.userId === ME) n.read = true; });
   save(); render();
 }
 
 export function saveBio() {
-  me().bio = document.getElementById("bioInput").value.trim();
+  if (needAuth()) return;
+  const bio = (document.getElementById("bioInput")?.value || "").trim();
+  if (bio.length > 300) return toast("Bio is too long (max 300 characters).");
+  me().bio = bio;
   save(); render(); toast("Profile saved.");
 }
 
 export function deleteAccount() {
+  if (needAuth()) return;
   const live = DB.auctions.filter((a) => a.sellerId === ME && a.status === "live" && a.bids.length);
   const busy = DB.projects.filter((p) => p.status !== "completed" && p.status !== "cancelled" && p.members.some((m) => m.userId === ME) && p.members.length > 1);
   if (live.length) return toast("Close your auctions with bids before deleting.");
@@ -1377,30 +1728,42 @@ export function deleteAccount() {
   DB.projects = DB.projects.filter((p) => !p.members.some((m) => m.userId === ME));
   DB.threads = DB.threads.filter((t) => !t.members.includes(ME));
   DB.notifications = DB.notifications.filter((n) => n.userId !== ME);
+  DB.reports = DB.reports.filter((r) => r.by !== ME);
   DB.users = DB.users.filter((u) => u.id !== ME);
-  save(); stopPreview(); QUEUE = []; QIDX = -1; ME = null; setSession(null); TAB = "dash"; render();
+  save(); stopPreview(); ME = null; setSession(null); resetUiState(); render(); setHash("");
   toast("Account deleted.");
 }
 
 export function sendReport(postId) {
+  if (needAuth()) return;
+  const p = postById(postId);
+  if (!p || p.userId === ME) return toast("You can't report this post.");
+  if (DB.reports.some((r) => r.postId === postId && r.by === ME && r.status === "open")) return toast("You already reported this post.");
   DB.reports.push({ id: uid("r"), postId, by: ME, reason: document.getElementById("repReason").value, status: "open", ts: Date.now() });
   MODAL = null; save(); render(); toast("Reported. Admins will review.");
 }
 
 export function suspendUser(id) {
+  if (!isAdmin()) return toast("Admin access required.");
   const u = userById(id);
+  if (!u || u.admin) return toast("You can't suspend this account.");
   u.suspended = !u.suspended;
   save(); render(); toast(u.suspended ? "User suspended." : "User reinstated.");
 }
 
 export function resolveReport(id, how) {
+  if (!isAdmin()) return toast("Admin access required.");
   const r = DB.reports.find((x) => x.id === id);
+  if (!r || r.status !== "open") return;
   r.status = how === "remove" ? "acted" : "dismissed";
   if (how === "remove") DB.posts = DB.posts.filter((p) => p.id !== r.postId);
   save(); render();
 }
 
 export function setComm() {
-  DB.commissionPct = Math.max(0, +document.getElementById("commInput").value || 5);
+  if (!isAdmin()) return toast("Admin access required.");
+  const n = +document.getElementById("commInput").value;
+  if (!Number.isFinite(n) || n < 0 || n > 50) return toast("Commission must be between 0 and 50.");
+  DB.commissionPct = Math.round(n * 100) / 100;
   save(); render(); toast(`Commission set to ${DB.commissionPct}%.`);
 }

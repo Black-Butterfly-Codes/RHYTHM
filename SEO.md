@@ -1,71 +1,104 @@
-const SEO_META = {
-  auth: [
-    "Sign in | RHYTHM",
-    "Sign in to RHYTHM and join singers, instrumentalists, lyricists, composers and beatmakers creating together."
-  ],
+# SEO.md — Metadata, Crawling & Analytics (RHYTHM)
 
-  dash: [
-    "Creator Dashboard | RHYTHM",
-    "Your RHYTHM home: stats, engagement, collaborations, trending tracks, playlists and alerts."
-  ],
+## 1. What is indexable
 
-  home: [
-    "Discover Music | RHYTHM",
-    "Discover trending tracks, featured creators and fresh uploads from independent artists on RHYTHM."
-  ],
+| Route | Indexable | Notes |
+|---|---|---|
+| `/` (signed out) | ✅ | Static shell in `index.html` has the canonical metadata |
+| `/?page=privacy` | ✅ | Stable, fragment-free URL listed in `sitemap.xml` |
+| `/?page=contact` | ✅ | Stable, fragment-free URL listed in `sitemap.xml` |
+| Signed-in app screens (`#/dash`, `#/home`, …) | ❌ | `applySeo()` sets `noindex, nofollow` |
 
-  creators: [
-    "Explore Creators | RHYTHM",
-    "Find singers, instrumentalists, lyricists, composers and beatmakers to follow and collaborate with."
-  ],
+The app is a single-page application, so the underlying document is always
+`index.html`. The `?page=` parameter gives crawlers real URLs for the public
+pages; everything else is per-user state and should not be indexed.
 
-  explore: [
-    "Explore Tracks | RHYTHM",
-    "Search RHYTHM tracks by domain, genre, language, state and collaboration availability."
-  ],
+## 2. Static head (`index.html`)
 
-  boards: [
-    "Leaderboards | RHYTHM",
-    "State and national rankings for every creative domain, updated weekly, monthly, yearly and all-time."
-  ],
+`index.html` contains the default metadata for the landing/auth experience:
 
-  collabs: [
-    "Collaborations | RHYTHM",
-    "Manage collaboration requests and creative workspaces with fellow musicians."
-  ],
+- `<title>` and `<meta name="description">`
+- `<link rel="canonical">` → `https://rhythm-music-platform.netlify.app/`
+- Open Graph: `og:type`, `og:site_name`, `og:locale`, `og:title`,
+  `og:description`, `og:url`, `og:image` (+ width/height/alt)
+- Twitter/X: `summary_large_image`, title, description, image, alt
+- JSON-LD `@graph` with `Organization` and `WebSite`
+- Favicon (`favicon.svg`), Apple touch icon, and a font preload
+- A `<noscript>` block with a readable description and links to the privacy
+  policy, contact page, and source repository
 
-  auctions: [
-    "Marketplace | RHYTHM",
-    "Explore original lyrics, beats and compositions listed in the RHYTHM creator marketplace."
-  ],
+## 3. Runtime metadata (`applySeo()`)
 
-  msgs: [
-    "Messages | RHYTHM",
-    "Private chats with collaborators and artists on RHYTHM."
-  ],
+Every navigation calls `applySeo()` in `app.js`, which:
 
-  notifs: [
-    "Notifications | RHYTHM",
-    "Votes, comments, collaboration updates, leaderboard moves and auction alerts."
-  ],
+1. Picks a `[title, description]` pair from `SEO_META` (auth, dash, home,
+   creators, explore, boards, collabs, auctions, msgs, notifs, profile, admin,
+   privacy, contact).
+2. Updates the document title, description, Open Graph, and Twitter tags.
+3. Sets an **absolute** `og:image`/`twitter:image` URL
+   (`assets/og-image.png`, 1200×630).
+4. Sets a **fragment-free** canonical URL. Public pages use
+   `?page=privacy|contact`; everything else uses the origin + pathname.
+5. Adds `robots: noindex, nofollow` for app screens and removes it for public
+   pages.
+6. Calls `trackPage(key)` (a no-op unless analytics is configured).
 
-  profile: [
-    "Profile | RHYTHM",
-    "Creator profile: portfolio, stats, achievements, followers and collaboration options."
-  ],
+## 4. Sitemap & robots
 
-  admin: [
-    "Admin | RHYTHM",
-    "Platform moderation dashboard."
-  ],
+- `sitemap.xml` lists `/`, `/?page=privacy`, and `/?page=contact`.
+- `robots.txt` allows crawling, disallows the font directory, and points at
+  the sitemap.
+- Update `lastmod` in `sitemap.xml` when public page content changes.
 
-  privacy: [
-    "Privacy Policy | RHYTHM",
-    "How RHYTHM handles your account data, content and local storage in this prototype build."
-  ],
+If the production domain changes, update all of:
 
-  contact: [
-    "Contact Us | RHYTHM",
-    "Get in touch with the RHYTHM team: questions, feedback and support."
-  ],
-};
+- `index.html` canonical / OG / JSON-LD URLs
+- `sitemap.xml`
+- `robots.txt`
+- the Netlify domain
+
+## 5. Social preview image
+
+`assets/og-image.png` is 1200×630 and contains the RHYTHM wordmark, the
+tagline, the five creative domains, and the site URL. `assets/apple-touch-icon.png`
+is 180×180. Both are generated raster assets committed to the repo; regenerate
+them only if branding changes.
+
+## 6. Accessibility and Lighthouse
+
+The UI is built with landmarks (`<main>`), labelled form controls, real
+`<button>` elements for actions, `aria-label`s on icon-only controls,
+`role="dialog"` modals with `aria-modal` and labelled titles, focus trapping,
+and Escape-to-close. These also help Lighthouse's Accessibility and SEO
+categories.
+
+Baseline audit at the time of writing (local build):
+
+| Category | Public page | Signed-in dashboard |
+|---|---|---|
+| Accessibility | 1.00 | 1.00 |
+| Best Practices | 1.00 | 1.00 |
+| SEO | 1.00 | 1.00 |
+
+Re-run Lighthouse after changing markup or metadata.
+
+## 7. Analytics (optional, off by default)
+
+`analytics.js` exposes `initAnalytics()` and `trackPage(key)`.
+
+- `GA4_ID` is empty by default, so the module is a documented no-op: no
+  script is loaded, no cookies are set, and no request leaves the browser.
+- Setting `GA4_ID` to a real `G-XXXXXXXXXX` loads Google Tag Manager once and
+  sends screen-view events only.
+- Enabling it introduces a third-party request and cookies, so update
+  `PRIVACY.md`, the in-app privacy text, and the CSP (`script-src` /
+  `connect-src`) at the same time.
+
+## 8. SEO checklist for changes
+
+- [ ] Public pages keep stable, fragment-free canonical URLs.
+- [ ] App screens remain `noindex, nofollow`.
+- [ ] `og:image` resolves to an absolute URL and the file exists.
+- [ ] New routes get a title and description in `SEO_META`.
+- [ ] `sitemap.xml` / `robots.txt` updated if public routes change.
+- [ ] Lighthouse Accessibility/SEO stay at 1.00.

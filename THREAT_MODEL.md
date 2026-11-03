@@ -30,13 +30,15 @@ Socket.IO, S3-style storage, Indian payment gateway.
 ## 4. Threat scenarios & mitigations
 
 ### T1 — Account takeover (credential stuffing / weak passwords)
-Risk **H**. Mitigations: strong hashing (Argon2id, `AUTH.md`), rate-limited
-login + alerts, session rotation/invalidation, 2FA option in production.
+Risk **H**. Demo: PBKDF2-SHA256 (210k iterations, random salt), constant-time
+compare, 5-failure/60 s lockout, generic error message. Production: Argon2id
+server-side, rate-limited login + alerts, session rotation/invalidation, 2FA
+option.
 
 ### T2 — Session theft (XSS / token leak)
 Risk **H**. Demo: `esc()` on all rendered user content; session is a local id
-with no network value. Production: HttpOnly+Secure cookies, TLS/HSTS, CSP,
-no tokens in URLs or logs.
+with no network value. Production: HttpOnly+Secure cookies, TLS/HSTS, a CSP
+without `'unsafe-inline'`, no tokens in URLs or logs.
 
 ### T3 — Fake accounts & vote farming (rigged leaderboards)
 Risk **H** (core value proposition). Demo: email/username uniqueness, one vote
@@ -64,10 +66,11 @@ malware scan, private-bucket quarantine, ownership declaration checkbox on
 auction listing, takedown + strike system for copyright claims.
 
 ### T8 — Auction abuse (shill bidding, bid shielding, winner won't pay)
-Risk **H** (money). Demo: no self-bids, min increment, server-timestamped
-close (`tickCountdowns`/`settleAuctions`), reserve price, full bid history.
-Production: all of that server-side + payment authorization hold at bid
-time, payment deadline with forfeit + bidder reputation, admin dispute queue.
+Risk **H** (money). Demo: no self-bids, min increment, client close
+(`tickCountdowns`/`settleAuctions` using `logic.js`), reserve price, full bid
+history. Production: all of that server-side + payment authorization hold at
+bid time, payment deadline with forfeit + bidder reputation, admin dispute
+queue.
 
 ### T9 — Payment / settlement tampering
 Risk **H**. Never trust client "paid=true": verify via gateway webhooks with

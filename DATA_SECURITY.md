@@ -22,13 +22,20 @@ anything without an explicit user action.
 
 ## 3. Protection in this demo
 
-- Passwords: salted SHA-256 digests only (upgrade path: Argon2id — `AUTH.md`).
-- All rendering passes through `esc()` (`src/app.js`) → stored text (lyrics,
+- Passwords: **PBKDF2-SHA256** digests (210,000 iterations, random per-user
+  salt, constant-time comparison). Legacy fixed-salt SHA-256 digests are
+  accepted once and upgraded on login — see `AUTH.md`.
+- All rendering passes through `esc()` (`app.js`) → stored text (lyrics,
   comments, bios) cannot execute as HTML/JS (XSS defense).
 - Data lives in the user's own browser localStorage (`DB_KEY`,
-  `SESSION_KEY` in `src/store.js`); `wipeDB()` + `resetDemo()` give full
+  `SESSION_KEY` in `store.js`); `wipeDB()` + `resetDemo()` give full
   local deletion. There is no network copy, so no transit exposure — but also
   no server backup: clearing browser data loses the demo DB by design.
+- The web font is self-hosted (`assets/fonts/`), so a default build makes no
+  third-party requests. `analytics.js` is a no-op until an owner-configured
+  GA4 measurement ID is set.
+- Public pages (`/?page=privacy`, `/?page=contact`) are crawlable; signed-in
+  app screens send `noindex, nofollow`.
 
 ## 4. Production storage & encryption
 

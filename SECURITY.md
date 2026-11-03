@@ -5,7 +5,7 @@
 This file states how the RHYTHM project approaches security: what we protect,
 what we promise, and exactly what to do if you discover a vulnerability.
 Companion docs: `AUTH.md`, `DATA_SECURITY.md`, `THREAT_MODEL.md`,
-`SECURITY_CHECKLIST.md` (all in `src/docs/`).
+`SECURITY_CHECKLIST.md` (all in the repository root).
 
 ## 2. Security objectives
 
@@ -23,11 +23,11 @@ Companion docs: `AUTH.md`, `DATA_SECURITY.md`, `THREAT_MODEL.md`,
 
 ## 3. Scope: prototype vs production
 
-- **This prototype** (`index.html` + `src/*.js`) is a *functional demo*: the
+- **This prototype** (`index.html` + root `*.js`) is a *functional demo*: the
   "backend" is the browser's localStorage, there is no server, and all data
-  lives on the user's own device. Its controls (salted SHA-256 password
-  hashes, session tokens, role checks, vote/bid validation) demonstrate the
-  *logic* of the security model, not production-grade enforcement.
+  lives on the user's own device. Its controls (salted **PBKDF2-SHA256**
+  password hashes, session ids, role checks, vote/bid validation) demonstrate
+  the *logic* of the security model, not production-grade enforcement.
 - **Production** (per the approved plan: Node.js + Express, PostgreSQL,
   Socket.IO, object storage, Indian payment gateway) MUST re-implement every
   check server-side, because anything enforced only in browser JavaScript can
@@ -39,7 +39,7 @@ Companion docs: `AUTH.md`, `DATA_SECURITY.md`, `THREAT_MODEL.md`,
 
 | Version | Status | Receives security fixes |
 |---|---|---|
-| Prototype (current, `src/` demo) | Demonstration only — not for real users or real money | Best-effort fixes to demo logic |
+| Prototype (current, root demo) | Demonstration only — not for real users or real money | Best-effort fixes to demo logic |
 | Future 1.x production release | To be declared at launch | Yes, for 12 months after each minor release |
 
 Only the latest production release will receive patches. The demo seed
@@ -69,13 +69,24 @@ credit in release notes if desired, and notification when the fix ships.
 - Every feature PR must answer: *who can call this, and what stops abuse?*
   (see `SECURITY_CHECKLIST.md`).
 - All user input is treated as untrusted: validated, escaped on render
-  (`esc()` in `src/app.js`), and constrained by type/size (see `AUTH.md`,
+  (`esc()` in `app.js`), and constrained by type/size (see `AUTH.md`,
   `DATA_SECURITY.md`).
 - Privileges are minimal by default: normal users can only touch their own
   data; admin powers (`suspendUser`, `resolveReport`, commission changes) are
   gated on the `admin` flag, which becomes a server-checked role in
   production.
-- Dependencies (CDN imports, npm packages) are pinned and reviewed; no new
-  network-loaded code without a reason recorded in the PR.
+- **Zero runtime dependencies.** There are no CDN imports and no npm packages
+  in the browser bundle, so there is no third-party code to pin at runtime.
+  The web font is self-hosted under `assets/fonts/`; a default build makes no
+  third-party requests. Analytics (`analytics.js`) is disabled until the owner
+  sets a GA4 measurement ID — doing so would introduce one third-party request
+  and must be reflected in the privacy docs.
+- `netlify.toml` sets a Content-Security-Policy, `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, a strict referrer policy, and a
+  restrictive `Permissions-Policy`. `'unsafe-inline'` is required for scripts
+  because this prototype uses inline `onclick` handlers; removing it is a
+  prerequisite for production hardening.
+- CI (`.github/workflows/ci.yml`) runs syntax checks, asset/reference checks,
+  and unit tests on every push and pull request.
 - Backups and rollback are part of every production deploy
   (see `DATA_SECURITY.md`).

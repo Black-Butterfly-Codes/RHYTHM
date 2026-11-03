@@ -1,6 +1,6 @@
 # PRIVACY.md — RHYTHM Privacy Policy (prototype build)
 
-*Last updated: October 2026. Mirrors the in-app Privacy view 1:1. If the two
+*Last updated: November 2026. Mirrors the in-app Privacy view 1:1. If the two
 ever disagree, this file plus the in-app text must be updated together.*
 
 ## 1. What this app is
@@ -22,22 +22,30 @@ the network by itself.
 
 ## 3. Passwords & sessions
 
-Passwords are stored only as salted SHA-256 hashes — adequate for a demo,
-not production grade (production will use Argon2id; see `AUTH.md`). Sessions
+Passwords are stored only as salted **PBKDF2-SHA256** hashes (210,000
+iterations, random per-user salt) — appropriate for a demo, not production
+grade (production will use Argon2id server-side; see `AUTH.md`). Sessions
 persist in local storage until logout. Five failed logins trigger a 60-second
 lockout. Suspended accounts cannot log in.
 
 ## 4. Cookies & local storage
 
 Keys used: app database, session id, login-attempt lockout. No third-party
-cookies. Analytics code ships with the app but is **disabled until the owner
-configures a measurement ID** — a default build makes zero analytics requests.
+cookies. The web font is self-hosted, so a default build makes **no
+third-party requests**. Analytics code ships with the app but is **disabled
+until the owner configures a measurement ID** — a default build makes zero
+analytics requests.
 
 ## 5. Sharing & third parties
 
 None. Data does not leave your device through this app. Copied share links
 contain only a track reference. Contacting support by email is governed by
 your email provider's policy.
+
+Public pages: `/?page=privacy` and `/?page=contact` are indexable. Signed-in
+application screens send `noindex, nofollow` and are not intended for search
+engines. User profiles and posts are stored locally in your browser, not
+published to a server.
 
 ## 6. Retention & deletion
 

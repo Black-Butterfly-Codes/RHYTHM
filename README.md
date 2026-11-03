@@ -76,11 +76,16 @@ RHYTHM is designed around five creative domains:
 | CSS3                  | Styling and responsive design      |
 | JavaScript            | Application logic and interactions |
 | JavaScript ES Modules | Modular code organization          |
+| Web Crypto API        | PBKDF2-SHA256 password hashing     |
 | Web Audio API         | Generated music previews           |
 | LocalStorage          | Browser-based data persistence     |
+| Node.js               | Local static server + test runner  |
 | Git                   | Version control                    |
-| GitHub                | Source code hosting                |
+| GitHub Actions        | CI (static checks + unit tests)    |
 | Netlify               | Website deployment                 |
+
+The runtime has **zero dependencies and no build step**. Node.js is only used
+for the local static server and the test/check scripts.
 
 ## 🚀 Run Locally
 
@@ -106,66 +111,129 @@ cd RHYTHM
 ### 3. Start the local server
 
 ```bash
-npx serve .
+npm start
 ```
+
+That runs the dependency-free static server in `tools/serve.cjs` on port 4173.
+(Any static server works — for example `npx serve .` — but do not open
+`index.html` directly from disk: ES modules and `crypto.subtle` need an
+HTTP origin.)
 
 ### 4. Open the application
 
-Visit the local address displayed in your terminal, usually:
+Visit:
 
-`http://localhost:3000`
+`http://localhost:4173`
 
-## 🔐 Demo Account
+## 🔐 Demo Accounts
 
-The application includes a sample account:
+Fresh installs include seeded demo users. Every seeded password is `demo`.
 
-| Field    | Value                                 |
-| -------- | ------------------------------------- |
-| Email    | [rahul@demo.in](mailto:rahul@demo.in) |
-| Password | demo                                  |
+| Role  | Email           | Username   | Password |
+| ----- | --------------- | ---------- | -------- |
+| User  | rahul@demo.in   | rahulmusic | demo     |
+| Admin | admin@demo.in   | admin      | demo     |
+| User  | aman@demo.in    | amankeys   | demo     |
 
 You can also register a new account.
 
-**Note:** This is demonstration access, not a production authentication system.
+**Note:** This is demonstration access, not a production authentication
+system. Seeded credentials are public by design and must never exist in a
+real deployment.
 
 ## 📁 Project Structure
 
 ```text
 RHYTHM/
-├── index.html
+├── index.html              # App shell, SEO/OG metadata, structured data
+├── favicon.svg
 ├── style.css
-├── app.js
-├── audio.js
-├── seed.js
-├── store.js
+├── app.js                  # UI, routing, actions
+├── logic.js                # Pure scoring / auction helpers
+├── audio.js                # WebAudio demo previews
+├── analytics.js            # Optional GA4 hook (disabled by default)
+├── seed.js                 # Demo users, posts, auctions
+├── store.js                # localStorage DB + PBKDF2 auth
+├── assets/
+│   ├── og-image.png
+│   ├── apple-touch-icon.png
+│   └── fonts/              # Self-hosted Inter woff2 (no CDN)
+├── test/                   # node:test unit tests
+├── tools/
+│   ├── serve.cjs           # Zero-dependency static server
+│   └── check.cjs           # Static CI checks
+├── .github/workflows/ci.yml
+├── netlify.toml            # Hosting headers + CSP + SPA fallback
+├── robots.txt
+├── sitemap.xml
+├── package.json
 ├── README.md
 ├── AUTH.md
+├── CONTACT.md
+├── CONTRIBUTING.md
 ├── DATA_SECURITY.md
+├── PRIVACY.md
 ├── SECURITY.md
 ├── SECURITY_CHECKLIST.md
+├── SEO.md
 └── THREAT_MODEL.md
 ```
 
 ### Main Files
 
-| File         | Responsibility                         |
-| ------------ | -------------------------------------- |
-| `index.html` | Application entry point                |
-| `style.css`  | Interface styling                      |
-| `app.js`     | Main application functionality         |
-| `audio.js`   | Music preview generation               |
-| `seed.js`    | Initial demonstration data             |
-| `store.js`   | Browser storage and session management |
+| File           | Responsibility                                    |
+| -------------- | ------------------------------------------------- |
+| `index.html`   | Application entry point and static SEO metadata   |
+| `style.css`    | Interface styling, responsive layout, accessibility |
+| `app.js`       | UI rendering, routing, and all user actions        |
+| `logic.js`     | Pure, testable scoring and auction settlement logic |
+| `audio.js`     | Music preview generation                           |
+| `analytics.js` | Optional analytics integration (off by default)    |
+| `seed.js`      | Initial demonstration data                         |
+| `store.js`     | Browser storage, sessions, and password hashing    |
+
+## ✅ Quality Checks
+
+```bash
+npm run check   # JS syntax, required files, local asset refs, regression guards
+npm test        # node:test unit tests (logic + auth)
+npm run ci      # both, exactly what GitHub Actions runs
+```
+
+CI runs on every push and pull request via `.github/workflows/ci.yml`.
+
+## 🔎 SEO & Public Pages
+
+The privacy and contact pages are crawlable at `/?page=privacy` and
+`/?page=contact`; signed-in app screens send `noindex, nofollow`. Metadata,
+canonical URLs, Open Graph/Twitter tags, and JSON-LD live in `index.html` and
+are updated at runtime in `applySeo()`. See `SEO.md`.
 
 ## 🔒 Security and Privacy
 
 The repository includes supporting security documentation:
 
-* `AUTH.md`
-* `DATA_SECURITY.md`
-* `SECURITY.md`
-* `SECURITY_CHECKLIST.md`
-* `THREAT_MODEL.md`
+* `AUTH.md` — authentication, sessions, and the authorization matrix
+* `DATA_SECURITY.md` — data handling, storage, and recovery
+* `SECURITY.md` — security policy and responsible disclosure
+* `SECURITY_CHECKLIST.md` — per-PR and pre-launch verification list
+* `THREAT_MODEL.md` — threat analysis
+* `PRIVACY.md` — privacy policy
+* `CONTACT.md` — contact-form configuration
+* `SEO.md` — metadata, canonical URLs, and indexing rules
+
+Security-relevant properties of the current build:
+
+* Passwords are stored as salted **PBKDF2-SHA256** digests (210,000
+  iterations, per-user random salt) via the Web Crypto API. Legacy SHA-256
+  digests are accepted once and upgraded on the next successful login.
+* Five failed logins trigger a 60-second lockout.
+* All rendered user content passes through `esc()`.
+* The web font is self-hosted and the app makes **no third-party network
+  requests** by default.
+* `netlify.toml` sets a Content-Security-Policy and standard security headers.
+* Admin checks exist in the client actions, but they are **demo-only** — the
+  whole database is client-side.
 
 The current application is a browser-based prototype. Local browser storage is not equivalent to secure server-side authentication or centralized data protection.
 

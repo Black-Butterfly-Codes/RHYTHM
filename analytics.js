@@ -5,7 +5,7 @@
 //      (Admin > Data Streams > Web). Copy the Measurement ID (G-XXXXXXXXXX).
 //   2. Paste it below as GA4_ID. Rebuild/redeploy.
 // Until then every function below is a documented no-op: no requests leave
-// the browser, no cookies are set, nothing is collected. See src/SEO.md §17.
+// the browser, no cookies are set, nothing is collected. See SEO.md §7.
 
 export const GA4_ID = ""; // TODO(owner): paste GA4 Measurement ID, e.g. "G-1A2B3C4D5E"
 
