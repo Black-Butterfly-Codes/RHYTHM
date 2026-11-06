@@ -14,7 +14,8 @@ How RHYTHM knows *who you are* (authentication) and *what you may do*
 
 Fields: full name, unique username, unique email, password + confirmation,
 date of birth, state/UT (fixed list — drives leaderboard classification),
-city, bio, one-or-more domains + one primary domain.
+city, bio, one-or-more domains + one primary domain, and a **required,
+un-ticked** agreement to the Terms of Service and Privacy Policy.
 (`signup()` in `app.js`; hashing in `store.js`.)
 
 Validation rules enforced at signup:
@@ -26,13 +27,35 @@ Validation rules enforced at signup:
 - Username: 3–24 characters, letters/numbers/dots/dashes/underscores,
   unique case-insensitively.
 - Email unique case-insensitively.
-- Date of birth is required; the account must be between 13 and 120 years old.
+- Date of birth is required; the account must be between **13 and 120** years
+  old (`MIN_AGE` / `ageFromDob()` in `logic.js`).
+- **Under 18:** a parent/guardian full name, email and a consent declaration
+  are required. The account is marked `minor: true` and gets a
+  `parentalConsent` record with `status: "pending_verification"`.
 - Domains and state come from fixed lists (no free text → no spoofed
   leaderboard regions).
 - Primary domain must be one of the known domains.
+- The Terms/Privacy acceptance version is recorded on the account
+  (`termsVersion`, `privacyVersion`, `termsAcceptedAt`).
+
+`checkDob()` gives live feedback and reveals the guardian block only for
+13–17-year-olds. `migrate()` recomputes `minor` on every load (so an account is
+released at 18) and creates legacy pending-consent records.
 
 Production should additionally verify email ownership before the account can
-vote, bid, or transact.
+vote, bid, or transact, and should verify guardian consent out-of-band.
+
+## 2a. Minors & parental consent
+
+- `minorNeedsConsent(u)` is true while a minor's consent is not `verified`.
+- Paid-auction **creation** (`openAuctionCreate` / `createAuction`) and
+  **bidding** (`bid`) are blocked for those accounts.
+- The profile shows a parental-consent notice and an "Email a consent request"
+  button (`requestParentalConsent()`, a `mailto:` to the guardian on file).
+- An admin can mark consent **verified** or revoke it in the admin dashboard
+  (`verifyParentalConsent()`); the user is notified.
+- The prototype records a declaration only. Production must use real guardian
+  verification and keep an audit trail.
 
 ## 3. Password management
 
@@ -71,27 +94,31 @@ vote, bid, or transact.
 
 ## 5. Roles & permissions (authorization matrix)
 
-| Capability | Owner of the object | Other signed-in user | Suspended user | Admin |
-|---|---|---|---|---|
-| Post / edit / delete own posts | ✅ | — | ❌ | ✅ (own, and any via moderation) |
-| Vote / comment | ✅ others' posts only, never own | ✅ | ❌ | ✅ |
-| Collab request / chat | ✅ own requests & projects | ✅ (start requests) | ❌ | — |
-| Bid in auctions | ✅ (never own listing) | ✅ | ❌ | ✅ (never own) |
-| Create auctions | ✅ own eligible posts | — | ❌ | — |
-| View workspaces / DMs | ✅ members only | ❌ | — | ❌ content, ✅ metadata for disputes |
-| Suspend users, resolve reports, set commission | — | — | — | ✅ only |
+| Capability | Owner of the object | Other signed-in user | Suspended user | Minor (unverified consent) | Admin |
+|---|---|---|---|---|---|
+| Post / edit / delete own posts | ✅ | — | ❌ | ✅ (non-paid features) | ✅ (own, and any via moderation) |
+| Vote / comment | ✅ others' posts only, never own | ✅ | ❌ | ✅ | ✅ |
+| Collab request / chat | ✅ own requests & projects | ✅ (start requests) | ❌ | ✅ | — |
+| Bid in auctions | ✅ (never own listing) | ✅ | ❌ | ❌ | ✅ (never own) |
+| Create auctions | ✅ own eligible posts | — | ❌ | ❌ | — |
+| View workspaces / DMs | ✅ members only | ❌ | — | ✅ members only | ❌ content, ✅ metadata for disputes |
+| Report posts/users | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Suspend users, resolve reports, set commission | — | — | — | — | ✅ only |
+| Verify/revoke parental consent | — | — | — | — | ✅ only |
 
 Enforcement points in code:
 
 - `needAuth()` blocks unauthenticated and suspended users on write actions.
+- `minorNeedsConsent()` blocks paid-auction creation/bidding for unverified
+  minors.
 - Self-vote/self-bid/self-collab checks in `vote()`, `bid()`, `openCollab()`,
-  `sendRequest()`.
+  `sendRequest()`; self-report checks in `openReport()`/`openUserReport()`.
 - `projectMember()` and thread membership checks gate workspace chat/files and
   DMs.
 - Ownership checks on `deletePost()`, `createAuction()`, `openAuctionCreate()`,
   `deleteAccount()` preconditions, and report submission.
-- Admin gates (`isAdmin()`) inside `suspendUser()`, `resolveReport()`, and
-  `setComm()` — not just in the admin view.
+- Admin gates (`isAdmin()`) inside `suspendUser()`, `resolveReport()`,
+  `verifyParentalConsent()`, and `setComm()` — not just in the admin view.
 - `adminView()` additionally hides itself from non-admins.
 
 **Production hardening:** every one of these checks must be re-done on the
@@ -100,12 +127,18 @@ server-issued role claim; suspend/ban is enforced by middleware on all write
 APIs; private files use signed, expiring URLs scoped to project members; all
 admin actions are written to an append-only audit log.
 
-## 6. Account deletion
+## 6. Account deletion & data rights
 
 `deleteAccount()` requires confirmation, refuses while the user has live
 auctions with bids or active shared projects, then removes the user's posts,
 votes, comments, bids, listings, collaboration requests, projects, threads,
-notifications, reports, and profile before clearing the session.
+notifications, reports (filed and targeting the user), transactions, and
+profile before clearing the session.
+
+`downloadMyData()` exports the signed-in user's account, posts, votes,
+comments, favourites, follows, playlists, auctions, bids, transactions,
+projects, threads, notifications, reports filed and consent record as JSON.
+Profile → settings lets the user correct name, city and bio.
 
 This is a local delete only. Production must also revoke sessions/tokens,
 remove media objects, and document legally required retention.

@@ -11,10 +11,12 @@ records — in storage, in transit, and in backups.
 |---|---|---|
 | Identity | name, email, DOB, state/city, bio | High — PII |
 | Credentials | password hashes, sessions | Critical |
+| Minor records | guardian name/email, consent status, verification flag | High — child data |
 | Creative work | lyrics, audio, scores, drafts | High — user's IP |
 | Private collaboration | workspace chats, unreleased files | High — confidential by default |
-| Commercial | bids, transactions, licenses, fees | High — money + legal proof |
-| Safety | reports, suspensions, audit events | Medium — needed for disputes |
+| Commercial | bids, transactions, licenses, fees (simulated) | High — money + legal proof |
+| Safety | reports, suspensions, moderation actions, audit events | Medium — needed for disputes |
+| Consent | analytics choice + version in `rhythm_consent_v1` | Medium — proof of consent |
 
 Principle: collect the minimum needed (see signup fields in `AUTH.md`), keep
 unfinished collaboration content private to members, and never publish
@@ -31,11 +33,25 @@ anything without an explicit user action.
   `SESSION_KEY` in `store.js`); `wipeDB()` + `resetDemo()` give full
   local deletion. There is no network copy, so no transit exposure — but also
   no server backup: clearing browser data loses the demo DB by design.
+- **No payment credentials** are collected, transmitted or stored. Auctions,
+  fees and settlements are simulated demo data.
 - The web font is self-hosted (`assets/fonts/`), so a default build makes no
   third-party requests. `analytics.js` is a no-op until an owner-configured
-  GA4 measurement ID is set.
-- Public pages (`/?page=privacy`, `/?page=contact`) are crawlable; signed-in
-  app screens send `noindex, nofollow`.
+  GA4 measurement ID is set **and** the user accepts optional analytics.
+- Public pages (`/?page=privacy|terms|refund|disclaimer|copyright|contact`)
+  are crawlable; signed-in app screens send `noindex, nofollow`.
+
+## 3a. Consent, export and minor data
+
+- The consent banner offers **Accept analytics** and **Reject optional** with
+  no pre-ticked box. The choice and its version are stored in
+  `rhythm_consent_v1`; "Cookie settings" reopens it.
+- `downloadMyData()` exports the user's account and activity as JSON,
+  including the consent record and the minor/guardian fields where they apply.
+- Minor accounts store guardian name, guardian email, a declaration timestamp
+  and consent status. Admin verification is recorded in the same record.
+- `deleteAccount()` removes the user's local records, including reports filed
+  and reports targeting them, and their transactions.
 
 ## 4. Production storage & encryption
 
@@ -69,9 +85,13 @@ anything without an explicit user action.
 - Profiles show only what the user published; DMs and workspaces are
   members-only (see matrix in `AUTH.md`); admins see report metadata, not
   private content, unless a dispute requires it (logged access).
-- Blocking/reporting (`sendReport`, `contactUser` controls) is available to
-  every user; reports queue in the admin dashboard with dismiss/act
-  dispositions (`resolveReport`).
+- Blocking/reporting (`sendReport`, `sendUserReport`, `contactUser` controls)
+  is available to every signed-in user; reports queue in the admin dashboard
+  with dismiss/act/suspend dispositions (`resolveReport`).
+- Minors: paid-auction creation and bidding are blocked until an admin
+  verifies guardian consent (`verifyParentalConsent`).
 - Account deletion (production requirement): erases PII and private content,
   retains only anonymized records the law requires (transactions, audit log)
   with documented retention periods, in line with India's DPDP Act.
+- Production must also log admin access to moderation data and publish a
+  retention schedule, processor list and breach-notification procedure.

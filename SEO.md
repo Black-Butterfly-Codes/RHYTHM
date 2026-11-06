@@ -6,12 +6,17 @@
 |---|---|---|
 | `/` (signed out) | ✅ | Static shell in `index.html` has the canonical metadata |
 | `/?page=privacy` | ✅ | Stable, fragment-free URL listed in `sitemap.xml` |
+| `/?page=terms` | ✅ | Terms of Service |
+| `/?page=refund` | ✅ | Refund & Cancellation Policy |
+| `/?page=disclaimer` | ✅ | Disclaimer |
+| `/?page=copyright` | ✅ | Copyright & DMCA |
 | `/?page=contact` | ✅ | Stable, fragment-free URL listed in `sitemap.xml` |
 | Signed-in app screens (`#/dash`, `#/home`, …) | ❌ | `applySeo()` sets `noindex, nofollow` |
 
 The app is a single-page application, so the underlying document is always
 `index.html`. The `?page=` parameter gives crawlers real URLs for the public
 pages; everything else is per-user state and should not be indexed.
+`PUBLIC_PAGES` in `app.js` is the single list of these routes.
 
 ## 2. Static head (`index.html`)
 
@@ -33,19 +38,23 @@ Every navigation calls `applySeo()` in `app.js`, which:
 
 1. Picks a `[title, description]` pair from `SEO_META` (auth, dash, home,
    creators, explore, boards, collabs, auctions, msgs, notifs, profile, admin,
-   privacy, contact).
+   privacy, terms, refund, disclaimer, copyright, contact).
 2. Updates the document title, description, Open Graph, and Twitter tags.
 3. Sets an **absolute** `og:image`/`twitter:image` URL
    (`assets/og-image.png`, 1200×630).
 4. Sets a **fragment-free** canonical URL. Public pages use
-   `?page=privacy|contact`; everything else uses the origin + pathname.
+   `?page=privacy|terms|refund|disclaimer|copyright|contact`; everything else
+   uses the origin + pathname.
 5. Adds `robots: noindex, nofollow` for app screens and removes it for public
    pages.
-6. Calls `trackPage(key)` (a no-op unless analytics is configured).
+6. Calls `trackPage(key)` (a no-op unless analytics is configured **and** the
+   user has consented).
 
 ## 4. Sitemap & robots
 
-- `sitemap.xml` lists `/`, `/?page=privacy`, and `/?page=contact`.
+- `sitemap.xml` lists `/`, `/?page=privacy`, `/?page=terms`,
+  `/?page=refund`, `/?page=disclaimer`, `/?page=copyright` and
+  `/?page=contact`.
 - `robots.txt` allows crawling, disallows the font directory, and points at
   the sitemap.
 - Update `lastmod` in `sitemap.xml` when public page content changes.
@@ -84,15 +93,21 @@ Re-run Lighthouse after changing markup or metadata.
 
 ## 7. Analytics (optional, off by default)
 
-`analytics.js` exposes `initAnalytics()` and `trackPage(key)`.
+`analytics.js` exposes `initAnalytics()`, `trackPage(key)` and
+`setAnalyticsConsent(allowed)`.
 
 - `GA4_ID` is empty by default, so the module is a documented no-op: no
   script is loaded, no cookies are set, and no request leaves the browser.
+- **Consent is required.** The app calls `setAnalyticsConsent()` from the
+  consent banner (`rhythm_consent_v1`) and only then may `initAnalytics()`
+  load Google Tag Manager. Rejecting optional analytics keeps the app fully
+  usable and makes no request.
 - Setting `GA4_ID` to a real `G-XXXXXXXXXX` loads Google Tag Manager once and
   sends screen-view events only.
 - Enabling it introduces a third-party request and cookies, so update
   `PRIVACY.md`, the in-app privacy text, and the CSP (`script-src` /
-  `connect-src`) at the same time.
+  `connect-src`) at the same time. The current `netlify.toml` CSP blocks the
+  GA domains.
 
 ## 8. SEO checklist for changes
 
@@ -101,4 +116,5 @@ Re-run Lighthouse after changing markup or metadata.
 - [ ] `og:image` resolves to an absolute URL and the file exists.
 - [ ] New routes get a title and description in `SEO_META`.
 - [ ] `sitemap.xml` / `robots.txt` updated if public routes change.
+- [ ] Analytics stays consent-gated.
 - [ ] Lighthouse Accessibility/SEO stay at 1.00.

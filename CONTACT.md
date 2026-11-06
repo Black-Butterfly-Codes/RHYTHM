@@ -8,14 +8,21 @@ The in-app Contact view (`contactView()` in `app.js`) is fully validated:
 - Accessible errors (`role="alert"`, `aria-live` region).
 - Spam defenses: honeypot field + 2-second minimum fill-time trap.
 - Submit behaviour is honest about the environment:
-  - If `CONTACT_EMAIL` (top of `app.js`) is set to a real inbox, the form
-    composes a `mailto:` message — the user's own email app sends it. No fake
-    “we received it” claims: the confirmation says the email app is opening.
+  - If `CONTACT_EMAIL` (or the fallback `LEGAL_EMAIL`) at the top of `app.js`
+    is set to a real inbox, the form composes a `mailto:` message — the user's
+    own email app sends it. No fake “we received it” claims: the confirmation
+    says the email app is opening.
   - If unset, the form says so plainly and offers **copy to clipboard**.
 - No API keys, no secrets, no backend calls.
 
-**Owner action:** set `CONTACT_EMAIL = "you@yourdomain.com"` in `app.js`.
-(Don't invent one — the placeholder is intentionally empty.)
+The Contact page also points to the privacy/grievance inbox, the grievance
+officer, and the Copyright & DMCA page. The copyright page covers takedowns,
+counter-notices and urgent child-safety reports.
+
+**Owner action:** set `CONTACT_EMAIL`, `LEGAL_EMAIL`, `LEGAL_ENTITY`,
+`LEGAL_ADDRESS` and `GRIEVANCE_OFFICER` in `app.js`, then mirror them in the
+Markdown policy files. (Don't invent them — the placeholders are intentionally
+empty.)
 
 The page is reachable directly at `/?page=contact` and is indexable; the
 `?page=` routes exist so crawlers get stable URLs without fragments.
@@ -49,9 +56,23 @@ To upgrade the repo copy:
 ## 3. Spam & privacy notes
 
 - Never log message bodies to analytics. Analytics is disabled by default and,
-  even when enabled, `analytics.js` tracks screen-views only.
+  even when enabled, `analytics.js` tracks screen-views only and requires
+  consent.
 - The mailto path exposes the sender's email address to the inbox owner —
   that is the point of a contact form; say so on the page (already stated:
-  “don't include passwords”).
+  “don't include passwords or card details”).
 - Rate-limit public deployments at the edge if abuse appears (Netlify Edge /
   form settings), rather than weakening validation.
+
+## 4. Grievance, privacy and copyright routes
+
+| Request | Where to send it |
+|---|---|
+| Privacy / data rights | `LEGAL_EMAIL` (fallback `CONTACT_EMAIL`) |
+| Grievance / appeal | `GRIEVANCE_OFFICER` + `LEGAL_EMAIL` |
+| Copyright takedown / counter-notice | `LEGAL_EMAIL`, subject “Copyright takedown” / “Copyright counter-notice” |
+| Urgent child safety | emergency services first, then `LEGAL_EMAIL`, subject “URGENT child safety” |
+
+All of these are `[PLACEHOLDER]` values until the owner fills them in.
+In production, publish response targets and keep a log of complaints and
+actions.

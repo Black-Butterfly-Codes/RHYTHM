@@ -1360,3 +1360,233 @@ tr:hover td { background: rgba(255,255,255,0.025); }
 
 /* ── Bottom nav hidden on desktop (shown by mobile breakpoint above) */
 .bnav { display: none; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   COMPLIANCE & LEGAL — consent banner, terms checkbox, data rights
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Cookie / analytics consent banner ────────────────────────────
+   Sticks to the bottom of the viewport. Appears before analytics
+   loads. Dismissed choice is stored in localStorage (consent key).  */
+.consentBanner {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  z-index: 200;                            /* above player (z:40) */
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  /* Glass surface — deepest depth */
+  background: rgba(10, 8, 24, 0.97);
+  border-top: 1px solid var(--glass-border-vio, rgba(139,92,246,0.45));
+  box-shadow: 0 -4px 40px rgba(0,0,0,0.55);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+@supports (backdrop-filter: blur(1px)) {
+  .consentBanner {
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(28px) saturate(170%);
+    -webkit-backdrop-filter: blur(28px) saturate(170%);
+  }
+}
+.consentBanner p {
+  margin: 0;
+  flex: 1;
+  min-width: 220px;
+  color: var(--text-secondary, #A1A1AA);
+}
+.consentBanner p a,
+.consentBanner p .lnk {
+  color: var(--accent-cyan, #22D3EE);
+}
+.consentBanner .cBtns {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: none;
+}
+/* Accept = primary, Reject = ghost/danger */
+.consentBanner .btn-accept {
+  border: 0;
+  border-radius: var(--rs, 14px);
+  padding: 9px 20px;
+  font-weight: 700; font-size: 13.5px;
+  cursor: pointer; color: #07060f;
+  background: linear-gradient(90deg,
+    var(--accent-primary, #8B5CF6) 0%,
+    var(--accent-secondary, #6366F1) 100%);
+  box-shadow: 0 4px 18px rgba(139,92,246,0.40);
+  font-family: inherit;
+  transition: filter 0.16s ease, transform 0.16s ease;
+}
+.consentBanner .btn-accept:hover {
+  filter: brightness(1.13); transform: translateY(-1px);
+}
+.consentBanner .btn-reject {
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: var(--rs, 14px);
+  padding: 9px 20px;
+  font-weight: 600; font-size: 13.5px;
+  cursor: pointer; color: var(--text-secondary, #A1A1AA);
+  background: rgba(255,255,255,0.06);
+  font-family: inherit;
+  transition: border-color 0.16s ease, color 0.16s ease;
+}
+.consentBanner .btn-reject:hover {
+  border-color: rgba(255,255,255,0.35); color: #fff;
+}
+/* Hide banner after choice */
+.consentBanner[hidden] { display: none; }
+
+/* ── Terms / legal checkbox row at signup ──────────────────────── */
+.termsCheck {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 14px 0 6px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--glass-border, rgba(255,255,255,0.12));
+  border-radius: var(--rxs, 9px);
+  font-size: 13px;
+  color: var(--text-secondary, #A1A1AA);
+  line-height: 1.5;
+}
+.termsCheck input[type="checkbox"] {
+  width: 17px; height: 17px;
+  flex: none; margin-top: 2px;
+  accent-color: var(--accent-primary, #8B5CF6);
+  cursor: pointer;
+}
+.termsCheck a,
+.termsCheck .lnk {
+  color: var(--accent-cyan, #22D3EE);
+}
+/* Highlight the row if unchecked on submit attempt */
+.termsCheck.error {
+  border-color: var(--danger, #F43F5E);
+  background: rgba(244,63,94,0.07);
+}
+
+/* ── Skip link (keyboard users) ───────────────────────────────────── */
+.skipLink {
+  position: fixed;
+  top: 10px; left: 10px;
+  z-index: 400;
+  transform: translateY(-160%);
+  padding: 10px 16px;
+  border-radius: var(--rxs, 9px);
+  background: var(--accent-primary, #8B5CF6);
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  text-decoration: none;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+  transition: transform 0.15s ease;
+}
+.skipLink:focus,
+.skipLink:focus-visible { transform: translateY(0); outline: 2px solid #fff; outline-offset: 2px; }
+
+/* keep the skip target from drawing an odd focus ring */
+main#main:focus { outline: none; }
+
+/* ── Parent / guardian consent block on signup ───────────────────── */
+.parentalBox {
+  margin: 14px 0 4px;
+  padding: 14px 16px;
+  border: 1px solid rgba(251,191,36,0.38);
+  border-left: 3px solid var(--warn, #FBBF24);
+  border-radius: var(--rxs, 9px);
+  background: rgba(251,191,36,0.06);
+}
+.parentalBox[hidden] { display: none; }
+.parentalBox h3 { margin: 0 0 6px; font-size: 15px; color: var(--warn, #FBBF24); }
+.parentalBox p { margin: 0 0 10px; }
+
+.checkRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0 2px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary, #A1A1AA);
+  cursor: pointer;
+}
+.checkRow input[type="checkbox"] {
+  width: 17px; height: 17px;
+  flex: none; margin-top: 2px;
+  accent-color: var(--accent-primary, #8B5CF6);
+  cursor: pointer;
+}
+
+/* ── Policy pages ────────────────────────────────────────────────── */
+.policy { line-height: 1.65; }
+.policy h3 { margin: 22px 0 8px; font-size: 16px; color: var(--text-primary, #F8FAFC); }
+.policy p { margin: 0 0 12px; }
+.policy code {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(255,255,255,0.08);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.92em;
+}
+.policyList { margin: 0 0 14px; padding-left: 20px; }
+.policyList li { margin: 0 0 7px; }
+.legalPending {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(251,191,36,0.40);
+  border-left: 3px solid var(--warn, #FBBF24);
+  border-radius: var(--rxs, 9px);
+  background: rgba(251,191,36,0.07);
+  color: var(--text-secondary, #A1A1AA);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* ── Auction price / tax / prototype disclosure ──────────────────── */
+.disclosure {
+  margin: 10px 0 4px;
+  padding: 11px 14px;
+  border: 1px solid rgba(34,211,238,0.30);
+  border-left: 3px solid var(--accent-cyan, #22D3EE);
+  border-radius: var(--rxs, 9px);
+  background: rgba(34,211,238,0.06);
+  color: var(--text-secondary, #A1A1AA);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.disclosure b { color: var(--text-primary, #F8FAFC); }
+
+/* ── Minor / parental-consent notices ────────────────────────────── */
+.parentalNotice,
+.minorNotice {
+  margin: 12px 0;
+  padding: 11px 14px;
+  border: 1px solid rgba(251,191,36,0.32);
+  border-left: 3px solid var(--warn, #FBBF24);
+  border-radius: var(--rxs, 9px);
+  background: rgba(251,191,36,0.06);
+  color: var(--text-secondary, #A1A1AA);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* ── Print: a clean policy/document view ─────────────────────────── */
+@media print {
+  .side, .bnav, .player, .toprow, .consentBanner, .skipLink, .foot, .crumbs, .modal { display: none !important; }
+  .app { display: block; }
+  .main { margin: 0; padding: 0; }
+  .glass, .policy {
+    box-shadow: none !important;
+    background: #fff !important;
+    color: #111 !important;
+    border: 0 !important;
+    padding: 0 !important;
+  }
+  .policy a, .policy .lnk { color: #111 !important; text-decoration: underline; }
+  .legalPending { border: 1px solid #999 !important; background: #fff !important; color: #111 !important; }
+}

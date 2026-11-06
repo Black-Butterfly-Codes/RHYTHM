@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DAY, postScore, topBid, settleOutcome } from "../logic.js";
+import { DAY, postScore, topBid, settleOutcome, ageFromDob, ageBand } from "../logic.js";
 
 const NOW = 1_700_000_000_000;
+const NOV_6_2026 = Date.UTC(2026, 10, 6, 12, 0, 0);
 
 test("postScore counts only votes inside the rolling window", () => {
   const post = {
@@ -22,6 +23,24 @@ test("postScore tolerates missing or malformed vote arrays", () => {
   assert.equal(postScore({}, DAY, NOW), 0);
   assert.equal(postScore({ votes: null }, DAY, NOW), 0);
   assert.equal(postScore({ votes: [{ v: 1, ts: NOW }, null, { v: 5, ts: NOW }] }, DAY, NOW), 1);
+});
+
+test("ageFromDob counts whole years and handles birthdays today/tomorrow", () => {
+  assert.equal(ageFromDob("2008-11-06", NOV_6_2026), 18);
+  assert.equal(ageFromDob("2008-11-07", NOV_6_2026), 17);
+  assert.equal(ageFromDob("2013-11-06", NOV_6_2026), 13);
+  assert.equal(ageFromDob("2013-11-07", NOV_6_2026), 12);
+  assert.equal(ageFromDob("", NOV_6_2026), null);
+  assert.equal(ageFromDob("not-a-date", NOV_6_2026), null);
+  assert.equal(ageFromDob("2008-02-31", NOV_6_2026), null);
+});
+
+test("ageBand separates under-13, minor and adult accounts", () => {
+  assert.equal(ageBand("2013-11-07", NOV_6_2026), "under_minimum");
+  assert.equal(ageBand("2013-11-06", NOV_6_2026), "minor");
+  assert.equal(ageBand("2008-11-07", NOV_6_2026), "minor");
+  assert.equal(ageBand("2008-11-06", NOV_6_2026), "adult");
+  assert.equal(ageBand("", NOV_6_2026), "invalid");
 });
 
 test("topBid returns null for empty auctions and the highest bid otherwise", () => {

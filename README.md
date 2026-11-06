@@ -169,13 +169,19 @@ RHYTHM/
 ├── package.json
 ├── README.md
 ├── AUTH.md
+├── COMPLIANCE.md
 ├── CONTACT.md
 ├── CONTRIBUTING.md
+├── COPYRIGHT.md
 ├── DATA_SECURITY.md
+├── DISCLAIMER.md
+├── LICENSES.md
 ├── PRIVACY.md
+├── REFUNDS.md
 ├── SECURITY.md
 ├── SECURITY_CHECKLIST.md
 ├── SEO.md
+├── TERMS.md
 └── THREAT_MODEL.md
 ```
 
@@ -186,11 +192,45 @@ RHYTHM/
 | `index.html`   | Application entry point and static SEO metadata   |
 | `style.css`    | Interface styling, responsive layout, accessibility |
 | `app.js`       | UI rendering, routing, and all user actions        |
-| `logic.js`     | Pure, testable scoring and auction settlement logic |
+| `logic.js`     | Pure, testable scoring, age and auction logic      |
 | `audio.js`     | Music preview generation                           |
-| `analytics.js` | Optional analytics integration (off by default)    |
+| `analytics.js` | Optional, consent-gated analytics (off by default) |
 | `seed.js`      | Initial demonstration data                         |
 | `store.js`     | Browser storage, sessions, and password hashing    |
+
+## 🧾 Legal & Compliance
+
+The app ships in-app **Terms**, **Privacy**, **Refunds**, **Disclaimer**,
+**Copyright & DMCA** and **Contact** pages, plus Markdown mirrors:
+
+| In-app page | Public URL | Markdown |
+|---|---|---|
+| Terms of Service | `/?page=terms` | `TERMS.md` |
+| Privacy Policy | `/?page=privacy` | `PRIVACY.md` |
+| Refund & Cancellation | `/?page=refund` | `REFUNDS.md` |
+| Disclaimer | `/?page=disclaimer` | `DISCLAIMER.md` |
+| Copyright & DMCA | `/?page=copyright` | `COPYRIGHT.md` |
+| Contact | `/?page=contact` | `CONTACT.md` |
+
+Current compliance behaviour:
+
+- **13+ with guardian consent under 18.** Paid auctions stay locked until an
+  admin verifies parental consent.
+- **Prototype payments only.** Auctions, fees and settlements are simulated;
+  no card details are collected and no charge is made.
+- **Consent-gated analytics.** A banner offers Accept/Reject; analytics never
+  loads without consent and a configured GA4 ID.
+- **Data rights.** JSON export (`Download my data`), profile correction, account
+  deletion, and cookie settings.
+- **Moderation.** Report posts and users, review reports in the admin
+  dashboard, remove content or suspend accounts.
+- **Asset licensing.** Inter is self-hosted under OFL-1.1; no stock media or
+  third-party JS is bundled. See `LICENSES.md`.
+
+Owner-specific values (entity, address, support/privacy email, grievance
+officer, refund window) are deliberately blank and render as
+`[PLACEHOLDER: …]` until filled in. See `COMPLIANCE.md` for the full checklist
+and the lawyer/manual actions required before launch.
 
 ## ✅ Quality Checks
 
@@ -204,23 +244,27 @@ CI runs on every push and pull request via `.github/workflows/ci.yml`.
 
 ## 🔎 SEO & Public Pages
 
-The privacy and contact pages are crawlable at `/?page=privacy` and
+The public legal pages are crawlable at `/?page=privacy`, `/?page=terms`,
+`/?page=refund`, `/?page=disclaimer`, `/?page=copyright` and
 `/?page=contact`; signed-in app screens send `noindex, nofollow`. Metadata,
 canonical URLs, Open Graph/Twitter tags, and JSON-LD live in `index.html` and
 are updated at runtime in `applySeo()`. See `SEO.md`.
 
 ## 🔒 Security and Privacy
 
-The repository includes supporting security documentation:
+The repository includes supporting security and compliance documentation:
 
-* `AUTH.md` — authentication, sessions, and the authorization matrix
-* `DATA_SECURITY.md` — data handling, storage, and recovery
+* `AUTH.md` — authentication, age/parental consent, and the authorization matrix
+* `DATA_SECURITY.md` — data handling, storage, consent, export and recovery
 * `SECURITY.md` — security policy and responsible disclosure
 * `SECURITY_CHECKLIST.md` — per-PR and pre-launch verification list
 * `THREAT_MODEL.md` — threat analysis
 * `PRIVACY.md` — privacy policy
-* `CONTACT.md` — contact-form configuration
-* `SEO.md` — metadata, canonical URLs, and indexing rules
+* `TERMS.md` / `REFUNDS.md` / `DISCLAIMER.md` / `COPYRIGHT.md` — legal pages
+* `LICENSES.md` — font/asset/code licence inventory
+* `COMPLIANCE.md` — legal checklist, placeholders and launch actions
+* `CONTACT.md` — contact-form configuration and grievance routes
+* `SEO.md` — metadata, canonical URLs, indexing and analytics consent
 
 Security-relevant properties of the current build:
 
@@ -231,6 +275,7 @@ Security-relevant properties of the current build:
 * All rendered user content passes through `esc()`.
 * The web font is self-hosted and the app makes **no third-party network
   requests** by default.
+* Analytics is consent-gated and disabled until a GA4 ID is configured.
 * `netlify.toml` sets a Content-Security-Policy and standard security headers.
 * Admin checks exist in the client actions, but they are **demo-only** — the
   whole database is client-side.
@@ -251,6 +296,8 @@ Current limitations:
 * A centralized backend and production database are not yet integrated.
 * Collaboration and marketplace experiences are prototype functionality.
 * Real payments and commercial licensing are not implemented.
+* Legal/compliance text uses owner placeholders until they are filled in and
+  reviewed by a lawyer (see `COMPLIANCE.md`).
 
 ## 🔮 Future Development
 

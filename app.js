@@ -2,8 +2,8 @@
 import { loadDB, saveDB, wipeDB, getSession, setSession, hashPassword, verifyPassword, uid, DB_KEY, SESSION_KEY, DB_VERSION } from "./store.js";
 import { seedDB, REGIONS, DOMAINS, DOMAIN_LABEL, GENRES, LANGUAGES } from "./seed.js";
 import { togglePreview, isPlaying, stopPreview, setVolume, getVolume, currentTrack } from "./audio.js";
-import { initAnalytics, trackPage } from "./analytics.js";
-import { DAY, postScore, topBid, settleOutcome } from "./logic.js";
+import { initAnalytics, trackPage, setAnalyticsConsent } from "./analytics.js";
+import { DAY, postScore, topBid, settleOutcome, ageFromDob, ageBand, MIN_AGE, MAJORITY_AGE } from "./logic.js";
 
 const PERIODS = { week: 7 * DAY, month: 30 * DAY, year: 365 * DAY, all: Infinity };
 const PERIOD_LABEL = { week: "Weekly", month: "Monthly", year: "Yearly", all: "All-Time" };
@@ -28,6 +28,7 @@ let VOL = 0.8;
 let RUNTIME_STARTED = false;
 let MODAL_OPEN = false;
 let FOCUS_BEFORE_MODAL = null;
+let CONSENT_PROMPT = false;
 
 function arr(v) { return Array.isArray(v) ? v : []; }
 
@@ -59,6 +60,17 @@ function migrate() {
     if (!DOMAINS.includes(u.primary) || !u.domains.includes(u.primary)) u.primary = u.domains[0];
     u.suspended = Boolean(u.suspended);
     u.admin = Boolean(u.admin);
+    // Recompute the age band on every load so a minor who turns 18 is released
+    // automatically, and legacy minor accounts get a pending-consent record.
+    const age = ageFromDob(u.dob);
+    if (age != null) {
+      u.minor = age < MAJORITY_AGE;
+      if (u.minor && !u.parentalConsent) {
+        u.parentalConsent = { required: true, status: "pending_verification", guardianName: "", guardianEmail: "", declaredAt: null, legacy: true, version: TERMS_VERSION };
+      }
+    }
+    u.termsVersion = u.termsVersion || "legacy";
+    u.privacyVersion = u.privacyVersion || "legacy";
   }
 
   for (const p of DB.posts) {
@@ -116,6 +128,8 @@ export async function boot() {
     setVolume(VOL);
     routeHash(); // honour #/tab or #/post-ID deep links on load
     if (!RUNTIME_STARTED) startRuntime();
+    const consent = getConsent();
+    setAnalyticsConsent(Boolean(consent && consent.analytics));
     initAnalytics();
     render();
   } catch (e) {
@@ -271,9 +285,76 @@ function updatePlayerUI() {
   if (tm) tm.textContent = fmtT(t.elapsed) + " / " + fmtT(t.dur);
 }
 
-// ---- SEO: per-screen titles/descriptions, canonical, robots, hash routes ----
-const CONTACT_EMAIL = ""; // TODO(owner): set support inbox, e.g. "hello@example.com". See CONTACT.md.
+// ---- Legal & compliance configuration -------------------------------------
+// TODO(owner): every empty string below is a marked [PLACEHOLDER] in the app
+// and in the policy files. Fill these in and have a lawyer review the pages
+// before a public/commercial launch. See COMPLIANCE.md.
+const CONTACT_EMAIL = "";        // TODO(owner): support inbox, e.g. "hello@example.com"
+const LEGAL_ENTITY = "";         // TODO(owner): registered business/owner name
+const LEGAL_ADDRESS = "";        // TODO(owner): registered address
+const LEGAL_EMAIL = "";          // TODO(owner): privacy & grievance inbox
+const GRIEVANCE_OFFICER = "";    // TODO(owner): name, designation and contact
+const GOVERNING_LAW = "India";   // TODO(owner): governing law / courts if not India
+const POLICY_VERSION = "2026-11-06";
+const TERMS_VERSION = POLICY_VERSION;
+const PRIVACY_VERSION = POLICY_VERSION;
+const CONSENT_KEY = "rhythm_consent_v1";
+const CONSENT_VERSION = 1;
+const PUBLIC_PAGES = ["privacy", "terms", "refund", "disclaimer", "copyright", "contact"];
+const REPORT_REASONS = [
+  "Copyright / plagiarism",
+  "Child safety / sexual content involving a minor",
+  "Harassment / threats",
+  "Personal data / doxxing",
+  "Impersonation",
+  "Offensive content",
+  "Spam / scam",
+  "Other",
+];
 
+function supportEmail() { return CONTACT_EMAIL || LEGAL_EMAIL; }
+function shown(value, label) { return value ? esc(value) : `[PLACEHOLDER: ${label} — TODO(owner)]`; }
+function legalEntity() { return shown(LEGAL_ENTITY, "LEGAL ENTITY / OWNER NAME"); }
+function legalAddress() { return shown(LEGAL_ADDRESS, "REGISTERED ADDRESS"); }
+function legalEmail() { return shown(supportEmail(), "PRIVACY / GRIEVANCE EMAIL"); }
+function grievanceOfficer() { return shown(GRIEVANCE_OFFICER, "GRIEVANCE OFFICER NAME & CONTACT"); }
+function legalReady() { return Boolean(LEGAL_ENTITY && LEGAL_ADDRESS && supportEmail()); }
+function emailLink() {
+  const e = supportEmail();
+  return e ? `<a href="mailto:${esc(e)}">${esc(e)}</a>` : legalEmail();
+}
+function getConsent() {
+  try {
+    const rec = JSON.parse(localStorage.getItem(CONSENT_KEY) || "null");
+    if (!rec || rec.version !== CONSENT_VERSION || typeof rec.analytics !== "boolean") return null;
+    return rec;
+  } catch (e) { return null; }
+}
+function setConsentRecord(analytics) {
+  const rec = { version: CONSENT_VERSION, analytics: Boolean(analytics), decidedAt: Date.now() };
+  try { localStorage.setItem(CONSENT_KEY, JSON.stringify(rec)); } catch (e) { /* storage may be blocked */ }
+  CONSENT_PROMPT = false;
+  setAnalyticsConsent(rec.analytics);
+  if (rec.analytics) initAnalytics();
+  render();
+  toast(rec.analytics ? "Analytics allowed. You can change this any time." : "Optional analytics rejected. Essential storage only.");
+}
+function consentBannerHtml() {
+  if (MODAL) return "";
+  if (getConsent() && !CONSENT_PROMPT) return "";
+  return `<div class="consentBanner" role="region" aria-label="Privacy and analytics consent">
+    <p><b>Your privacy choice.</b> Essential local storage signs you in and saves your work. Optional analytics is <b>off</b> unless you accept it. <button type="button" class="lnk" onclick="R.nav('privacy')">Privacy Policy</button> · <button type="button" class="lnk" onclick="R.nav('terms')">Terms</button></p>
+    <div class="cBtns">
+      <button type="button" class="btn-reject" onclick="R.rejectAnalytics()">Reject optional</button>
+      <button type="button" class="btn-accept" onclick="R.acceptAnalytics()">Accept analytics</button>
+    </div>
+  </div>`;
+}
+function minorNeedsConsent(u) {
+  return Boolean(u && u.minor && (!u.parentalConsent || u.parentalConsent.status !== "verified"));
+}
+
+// ---- SEO: per-screen titles/descriptions, canonical, robots, hash routes ----
 const SEO_META = {
   auth: ["Sign in | RHYTHM", "Sign in to RHYTHM and join singers, instrumentalists, lyricists, composers and beatmakers creating together."],
   dash: ["Creator Dashboard | RHYTHM", "Your RHYTHM home: stats, engagement, collaborations, trending tracks, playlists and alerts."],
@@ -287,8 +368,12 @@ const SEO_META = {
   notifs: ["Notifications | RHYTHM", "Votes, comments, collaboration updates, leaderboard moves and auction alerts."],
   profile: ["Profile | RHYTHM", "Creator profile: portfolio, stats, achievements, followers and collaboration options."],
   admin: ["Admin | RHYTHM", "Platform moderation dashboard."],
-  privacy: ["Privacy Policy | RHYTHM", "How RHYTHM handles your account data, content and local storage in this prototype build."],
-  contact: ["Contact Us | RHYTHM", "Get in touch with the RHYTHM team: questions, feedback and support."],
+  privacy: ["Privacy Policy | RHYTHM", "How RHYTHM handles your account data, content, cookies, consent and local storage in this prototype build."],
+  terms: ["Terms of Service | RHYTHM", "The rules for using RHYTHM, including accounts, content ownership, collaborations, auctions and moderation."],
+  refund: ["Refund & Cancellation Policy | RHYTHM", "RHYTHM's payment, cancellation and refund rules. The current prototype does not process real payments."],
+  disclaimer: ["Disclaimer | RHYTHM", "Important information about RHYTHM's prototype status, user content, licensing and limitations."],
+  copyright: ["Copyright & DMCA | RHYTHM", "How to report copyright infringement on RHYTHM, including takedown and counter-notice information."],
+  contact: ["Contact Us | RHYTHM", "Get in touch with the RHYTHM team: privacy, grievance, copyright, safety and support."],
 };
 
 function metaTag(attr, name, content) {
@@ -303,7 +388,7 @@ function metaTag(attr, name, content) {
 }
 
 function applySeo() {
-  const pub = !ME && (TAB === "privacy" || TAB === "contact");
+  const pub = !ME && PUBLIC_PAGES.includes(TAB);
   const key = !ME ? (pub ? TAB : "auth") : (SEO_META[TAB] ? TAB : "dash");
   const [t, d] = SEO_META[key];
   document.title = t;
@@ -313,8 +398,9 @@ function applySeo() {
   metaTag("name", "twitter:title", t);
   metaTag("name", "twitter:description", d);
 
-  // Canonical URLs must not contain a fragment. Public pages can be shared as
-  // ?page=privacy|contact so crawlers see stable, distinct URLs.
+  // Canonical URLs must not contain a fragment. Public legal pages can be
+  // shared as ?page=privacy|terms|refund|disclaimer|copyright|contact so
+  // crawlers see stable, distinct URLs.
   const base = location.origin + location.pathname;
   const canon = pub ? `${base}?page=${TAB}` : base;
   let c = document.head.querySelector('link[rel="canonical"]');
@@ -347,10 +433,10 @@ function setHash(h) {
 }
 /** Parse location.hash into TAB/EXPANDED state. Never renders by itself. */
 function routeHash() {
-  // Crawlable public URLs: /?page=privacy and /?page=contact.
+  // Crawlable public URLs: /?page=privacy and the other legal pages.
   try {
     const page = new URLSearchParams(location.search).get("page");
-    if (page === "privacy" || page === "contact") { TAB = page; return false; }
+    if (PUBLIC_PAGES.includes(page)) { TAB = page; return false; }
   } catch (e) { /* ignore */ }
   const h = location.hash || "";
   const mPost = h.match(/^#\/post-(.+)$/);
@@ -363,7 +449,7 @@ function routeHash() {
   const mTab = h.match(/^#\/([a-z]+)$/);
   if (mTab) {
     const t = mTab[1];
-    if (t === "privacy" || t === "contact") { TAB = t; return false; }
+    if (PUBLIC_PAGES.includes(t)) { TAB = t; return false; }
     if (ME && SEO_META[t]) TAB = t;
   }
   return false;
@@ -438,14 +524,16 @@ function tickCountdowns() {
 function render(keepScroll) {
   const y = keepScroll ? window.scrollY : 0;
   const c = document.getElementById("bootCtn");
-  const pub = !ME && (TAB === "privacy" || TAB === "contact");
+  const pub = !ME && PUBLIC_PAGES.includes(TAB);
   const wasModal = MODAL_OPEN;
   if (MODAL && !MODAL_OPEN) {
     FOCUS_BEFORE_MODAL = document.activeElement;
     MODAL_OPEN = true;
   }
   if (!MODAL) MODAL_OPEN = false;
-  c.innerHTML = ME ? appView() : (pub ? publicView() : authView());
+  c.innerHTML = `<button type="button" class="skipLink" onclick="R.skipToMain()">Skip to main content</button>`
+    + (ME ? appView() : (pub ? publicView() : authView()))
+    + consentBannerHtml();
   if (ME) tickCountdowns();
   applySeo();
   window.scrollTo(0, keepScroll ? y : 0);
@@ -463,7 +551,7 @@ function render(keepScroll) {
 // ----- auth -----
 function authView() {
   const inMode = AUTH_MODE === "in";
-  return `<main class="authWrap">
+  return `<main class="authWrap" id="main">
     <div class="authLogo"><div class="mark">♪</div>
       <h1>RHYTHM</h1>
       <p class="muted small">Discover Talent. Create Together. Rise Together.</p>
@@ -484,14 +572,32 @@ function authView() {
       <label for="suEmailInput">Email</label><input id="suEmailInput" type="email" maxlength="120" autocomplete="email" placeholder="you@email.in">
       <div class="grid2"><div><label for="suPassInput">Password (min 8)</label><input id="suPassInput" type="password" maxlength="200" autocomplete="new-password"></div>
       <div><label for="suPass2Input">Confirm password</label><input id="suPass2Input" type="password" maxlength="200" autocomplete="new-password"></div></div>
-      <div class="grid2"><div><label for="suDobInput">Date of birth</label><input id="suDobInput" type="date" autocomplete="bday"></div>
+      <div class="grid2"><div><label for="suDobInput">Date of birth</label><input id="suDobInput" type="date" autocomplete="bday" onchange="R.checkDob()"></div>
       <div><label for="suCityInput">City</label><input id="suCityInput" maxlength="60" autocomplete="address-level2" placeholder="Dehradun"></div></div>
+      <p id="dobHint" class="small dim" role="status" aria-live="polite"></p>
       <label for="suStateInput">State / Union Territory (decides your leaderboard)</label>
       <select id="suStateInput" aria-label="State or Union Territory">${REGIONS.map((r) => `<option>${r}</option>`).join("")}</select>
       <label>Creative domains (pick all that apply)</label>
       <div class="domPick">${DOMAINS.map((d) => `<label data-dom="${d}" class="${SIGNUP_DOMAINS.includes(d) ? "sel" : ""}"><input type="checkbox" ${SIGNUP_DOMAINS.includes(d) ? "checked" : ""} onchange="R.toggleDom('${d}')">${DOMAIN_LABEL[d]}</label>`).join("")}</div>
       <label for="suPrimaryInput">Primary domain (your main ranking)</label><select id="suPrimaryInput" aria-label="Primary creative domain">${SIGNUP_DOMAINS.map((d) => `<option value="${d}">${DOMAIN_LABEL[d]}</option>`).join("")}</select>
       <label for="suBioInput">Bio</label><input id="suBioInput" maxlength="300" placeholder="Short intro…">
+      <div class="parentalBox" id="parentalBox" hidden aria-hidden="true">
+        <h3>Parent / guardian consent</h3>
+        <p class="small">You are under 18. A parent or guardian must consent to your account. Paid auctions stay locked until we verify their consent.</p>
+        <label for="suGuardianName">Parent / guardian full name</label><input id="suGuardianName" maxlength="60" autocomplete="name">
+        <label for="suGuardianEmail">Parent / guardian email</label><input id="suGuardianEmail" type="email" maxlength="120" autocomplete="email">
+        <label class="checkRow" for="suGuardianCheck"><input type="checkbox" id="suGuardianCheck"> I confirm that my parent or guardian has read the Privacy Policy and consents to my use of RHYTHM and the content I publish.</label>
+      </div>
+      <div class="termsCheck" id="termsCheckRow">
+        <input type="checkbox" id="suTermsCheck" aria-describedby="termsError" onchange="R.clearTermsError()">
+        <label for="suTermsCheck" style="margin:0;font-size:13px;color:inherit">
+          I confirm I am at least 13 years old and I agree to the
+          <button type="button" class="lnk" onclick="R.nav('terms')">Terms of Service</button>
+          and
+          <button type="button" class="lnk" onclick="R.nav('privacy')">Privacy Policy</button>.
+        </label>
+      </div>
+      <p id="termsError" class="small formErr" role="alert" hidden></p>
       <div class="row" style="margin-top:14px"><button class="btn grow" onclick="R.signup()">Create account →</button></div>`}
     </div>${footLinks()}</main>${ME && MODAL ? modalHtml() : ""}`;
 }
@@ -499,22 +605,24 @@ function authView() {
 // ----- public shell, footer, privacy & contact (crawlable, no login needed) -----
 function footLinks() {
   const pub = !ME;
-  const goTab = (t, label) => pub && !["privacy", "contact"].includes(t)
+  const goTab = (t, label) => pub && !PUBLIC_PAGES.includes(t)
     ? `<button type="button" class="lnk" onclick="R.go('__signin')">${label}</button>`
     : `<button type="button" class="lnk" onclick="R.nav('${t}')">${label}</button>`;
   return `<div class="foot"><span>© RHYTHM · Discover Talent. Create Together. Rise Together.</span><span class="grow"></span>
-    <button type="button" class="lnk" onclick="R.nav('privacy')">Privacy Policy</button><button type="button" class="lnk" onclick="R.nav('contact')">Contact</button>
+    <button type="button" class="lnk" onclick="R.nav('terms')">Terms</button><button type="button" class="lnk" onclick="R.nav('privacy')">Privacy</button><button type="button" class="lnk" onclick="R.nav('refund')">Refunds</button><button type="button" class="lnk" onclick="R.nav('disclaimer')">Disclaimer</button><button type="button" class="lnk" onclick="R.nav('copyright')">Copyright</button><button type="button" class="lnk" onclick="R.nav('contact')">Contact</button><button type="button" class="lnk" onclick="R.openConsentSettings()">Cookie settings</button>
     ${goTab("home", "Discover")}${goTab("creators", "Creators")}${goTab("boards", "Leaderboards")}
     <a href="https://github.com/Black-Butterfly-Codes/RHYTHM" target="_blank" rel="noopener">GitHub</a></div>`;
 }
 // '__signin' pseudo-target: logged-out users land on the sign-in screen.
 function publicView() {
-  const body = TAB === "contact" ? contactView() : privacyView();
-  return `<main class="authWrap" style="max-width:720px">
+  const bodies = { privacy: privacyView, terms: termsView, refund: refundView, disclaimer: disclaimerView, copyright: copyrightView, contact: contactView };
+  const body = (bodies[TAB] || privacyView)();
+  return `<main class="authWrap" style="max-width:720px" id="main">
     <div class="authLogo"><div class="mark">♪</div><h1 style="letter-spacing:.18em;margin:14px 0 2px;font-size:22px">RHYTHM</h1>
     <p class="muted small">Discover Talent. Create Together. Rise Together.</p></div>
     <div class="row" style="justify-content:center;margin-bottom:6px">
       <button class="btn small ghost" onclick="R.nav('privacy')">Privacy</button>
+      <button class="btn small ghost" onclick="R.nav('terms')">Terms</button>
       <button class="btn small ghost" onclick="R.nav('contact')">Contact</button>
       <button class="btn small" onclick="R.go('__signin')">Sign in / Join →</button>
     </div>${body}${footLinks()}</main>${ME && MODAL ? modalHtml() : ""}`;
@@ -524,33 +632,175 @@ function crumbs(items) {
     i < items.length - 1 ? `<button type="button" class="lnk" onclick="R.nav('${it[1]}')">${esc(it[0])}</button><span aria-hidden="true">›</span>`
     : `<span aria-current="page">${esc(it[0])}</span>`).join("")}</nav>`;
 }
+function legalPage(title, body, version = POLICY_VERSION) {
+  const pending = legalReady() ? "" : `<div class="legalPending" role="note"><b>Prototype notice:</b> items in [BRACKETS] are owner placeholders. Replace them and have a lawyer review this page before public launch.</div>`;
+  return `${ME ? crumbs([["Dashboard", "dash"], [title, ""]]) : crumbs([["RHYTHM", "privacy"], [title, ""]])}
+  <div class="glass policy"><h2 style="margin-top:0">${esc(title)}</h2>
+  <p class="small dim">Last updated: 6 November 2026 · Version ${esc(version)} · <button type="button" class="lnk" onclick="R.printPage()">Print / save PDF</button></p>
+  ${pending}${body}</div>`;
+}
 function privacyView() {
-  return `${ME ? crumbs([["Dashboard", "dash"], ["Privacy Policy", ""]]) : crumbs([["RHYTHM", "privacy"], ["Privacy Policy", ""]])}
-  <div class="glass"><h2 style="margin-top:0">Privacy Policy</h2>
-  <p class="small dim">Last updated: November 2026 · Prototype build. This policy describes what this demo actually does — not a future production system.</p>
-  <h3>1. What this app is</h3>
-  <p class="small">RHYTHM is currently a <b>client-side prototype</b>: all data lives in your own browser's local storage on your device. There is no RHYTHM server, no cloud database, and nothing is transmitted anywhere over the network by the app itself.</p>
-  <h3>2. Information you provide</h3>
-  <p class="small">When you sign up you enter a name, username, email, password, date of birth, state/city and bio. When you use the app you create posts (lyrics, track metadata), votes, comments, collaboration messages, bids and auction listings. All of it is stored locally in your browser.</p>
-  <h3>3. Passwords & sessions</h3>
-  <p class="small">Passwords are stored only as salted <b>PBKDF2-SHA256</b> digests (210,000 iterations, random per-user salt) via the browser's Web Crypto API. This is demo-grade client-side storage, not a substitute for server-side Argon2id hashing. Sessions persist in local storage until you log out. Five failed logins trigger a 60-second lockout. See <b>AUTH.md</b> in the project repo.</p>
-  <h3>4. Cookies & local storage</h3>
-  <p class="small">The app uses local storage keys for the database, your session and login-attempt limits. It sets no third-party cookies. The web font is self-hosted, so the default build makes <b>no third-party network requests</b>. Analytics code is included but <b>disabled until the owner configures a measurement ID</b> — with the default build, no analytics requests are made.</p>
-  <h3>5. Sharing & third parties</h3>
-  <p class="small">None. Your data never leaves your device through this app. Share links you copy contain only a track reference. If you contact support by email, your message goes to that inbox under that provider's policy. The public pages (<b>?page=privacy</b> and <b>?page=contact</b>) are indexable by search engines; signed-in app screens are marked <b>noindex</b> and are not meant to be indexed.</p>
-  <h3>6. Retention & deletion</h3>
-  <p class="small">Data persists until you clear browser storage, use “Reset demo data”, or delete your account (Profile → Delete my account), which purges your posts, votes, chats, listings and profile from this device.</p>
-  <h3>7. Security limitations (read carefully)</h3>
-  <p class="small">Browser local storage is <b>not encrypted</b> and is readable by any script running on the same origin, so this prototype must not hold sensitive personal data. Production hosting will add TLS, server-side auth, encrypted storage and backups (see <b>DATA_SECURITY.md</b>).</p>
-  <h3>8. Children</h3><p class="small">RHYTHM is intended for users aged 13 and above.</p>
-  <h3>9. Contact</h3><p class="small">Privacy questions: use the <button type="button" class="lnk" onclick="R.nav('contact')">contact page</button>${CONTACT_EMAIL ? ` or email ${esc(CONTACT_EMAIL)}` : " (support inbox address to be published by the owner)"}.</p>
-  </div>`;
+  return legalPage("Privacy Policy", `
+  <p class="small">This policy explains what RHYTHM collects, why, how long it keeps it, and the choices you have. It covers the current prototype and the production service it is intended to become; where they differ, the difference is marked.</p>
+  <h3>1. Who we are</h3>
+  <p class="small">RHYTHM is operated by ${legalEntity()}, ${legalAddress()}. Privacy contact: ${emailLink()}. Grievance officer: ${grievanceOfficer()}.</p>
+  <h3>2. What we collect</h3>
+  <ul class="small policyList">
+    <li><b>Account data:</b> name, username, email, password (stored only as a salted hash), date of birth, state/UT, city, bio, creative domains, and — for users under 18 — parent/guardian name, email and consent status.</li>
+    <li><b>Your content:</b> posts, lyrics, track metadata, comments, votes, follows, playlists, collaboration requests, workspace files/chat, direct messages, auction listings and bids.</li>
+    <li><b>Transactions (prototype):</b> simulated auction results, fees and amounts. No card, bank or payment credentials are collected or stored.</li>
+    <li><b>Local device data:</b> session id, login-attempt lockout, app database and consent choice in browser localStorage.</li>
+    <li><b>Support:</b> the name, email and message you send through the contact form or email.</li>
+    <li><b>Analytics (optional):</b> if you accept, Google Analytics 4 may receive screen-view events, page title/path and a coarsened/truncated IP address. It is off by default and never loads without your consent.</li>
+  </ul>
+  <h3>3. Why we use it and our legal bases</h3>
+  <ul class="small policyList">
+    <li><b>Provide the service</b> (account, feed, collaboration, marketplace): performance of a contract.</li>
+    <li><b>Keep the platform safe</b> (moderation, fraud/spam prevention, security): legitimate interests and legal obligations.</li>
+    <li><b>Optional analytics:</b> your consent, which you can withdraw at any time via “Cookie settings”.</li>
+    <li><b>Legal compliance</b> (tax, consumer, copyright, child-safety and lawful requests): legal obligation.</li>
+  </ul>
+  <p class="small">We do not sell personal data and do not use it for behavioural advertising.</p>
+  <h3>4. Children and age</h3>
+  <p class="small">RHYTHM is for users aged 13 and over. Users under 18 need a parent or guardian's consent. In the prototype, a minor can create an account after providing guardian details and a declaration; <b>paid auction features stay locked until the guardian's consent is verified</b> by the operator. We do not knowingly allow under-13s. If you believe a child under 13 has created an account, contact ${emailLink()} and we will delete it.</p>
+  <p class="small">We do not show gambling, alcohol, tobacco, adult content or other age-restricted material. If that changes, minors will not be shown it.</p>
+  <h3>5. Cookies, local storage and consent</h3>
+  <p class="small">Essential storage is required to sign you in and save your work; it is not optional. Optional analytics is controlled by the consent banner. Rejecting optional analytics does not limit the app. You can reopen the choice with “Cookie settings” in the footer or profile. No pre-ticked boxes are used. The default build makes no third-party analytics request because no measurement ID is configured.</p>
+  <p class="small">Storage keys: <code>rhythm_db_v1</code> (app data), <code>rhythm_session_v1</code> (session), <code>rhythm_login_lock_v1</code> (rate limit), <code>rhythm_consent_v1</code> (your choice).</p>
+  <h3>6. Who we share with</h3>
+  <p class="small">Other users see the profile and content you choose to publish, and messages you send to them. In the current prototype, data stays in your browser and is not sent to RHYTHM or other users. In production, hosting, storage, email, payment and analytics providers will process data under contracts; payments will be handled by a certified gateway and RHYTHM will not store card details. We may disclose data when required by law or to protect safety and rights.</p>
+  <h3>7. Retention</h3>
+  <p class="small">Prototype: data stays in your browser until you delete your account, reset demo data, or clear site storage. Production: account and content data are kept while your account is active and for a short period after deletion for backups, fraud prevention and legal claims; payment/tax records are kept for the period required by law; analytics retention follows the GA4 setting. We will publish a retention schedule before launch.</p>
+  <h3>8. Your rights</h3>
+  <p class="small">Subject to applicable law (including India's Digital Personal Data Protection Act 2023, the GDPR/UK GDPR where it applies, and U.S. state privacy laws), you may access, correct, download, delete, restrict or object to processing, withdraw consent, and complain to a regulator. In the app: Profile → “Download my data” exports your data as JSON; “Delete my account” erases it; you can correct name, city and bio. For email, username, date of birth or other corrections, contact ${emailLink()}. We aim to respond within 30 days (or the shorter period required by law).</p>
+  <h3>9. Security</h3>
+  <p class="small">Passwords are salted and hashed with PBKDF2-SHA256 (210,000 iterations). Production will use Argon2id server-side, HTTPS, HttpOnly sessions, access controls and encrypted backups. Browser localStorage is not encrypted and is readable by scripts on the same origin; do not store sensitive data in this prototype. We never ask for card details in the app.</p>
+  <h3>10. International transfers</h3>
+  <p class="small">The prototype runs in your browser. Production hosting and service providers may process data outside your country; we will use appropriate safeguards and publish the list of providers before launch.</p>
+  <h3>11. Changes</h3>
+  <p class="small">We will update this page and the date above when the policy changes. Material changes will be notified in the app or by email where required.</p>
+  <h3>12. Contact &amp; grievance</h3>
+  <p class="small">Privacy and grievance contact: ${emailLink()}. Grievance officer: ${grievanceOfficer()}. You can also use the <button type="button" class="lnk" onclick="R.nav('contact')">contact page</button>. If you are not satisfied, you may complain to your local data-protection authority.</p>
+  `, PRIVACY_VERSION);
+}
+function termsView() {
+  return legalPage("Terms of Service", `
+  <p class="small">These terms are a contract between you and ${legalEntity()} (“RHYTHM”, “we”). By creating an account or using the service, you agree to them and to our <button type="button" class="lnk" onclick="R.nav('privacy')">Privacy Policy</button>. If you do not agree, do not use RHYTHM.</p>
+  <h3>1. Eligibility and age</h3>
+  <p class="small">You must be at least 13. If you are under 18, a parent or guardian must consent and is responsible for your use of RHYTHM. Paid auction features are locked until that consent is verified. We may ask for reasonable evidence of age or consent and may suspend an account until it is provided. You must not use RHYTHM if you are barred from doing so by law.</p>
+  <h3>2. Your account</h3>
+  <p class="small">Give accurate information, keep your password secure, and do not share your account. You are responsible for activity under your account. Tell us promptly about unauthorised use. We may require email verification or additional checks in production.</p>
+  <h3>3. Your content and licence</h3>
+  <p class="small">You keep ownership of the original content you publish. You grant RHYTHM a worldwide, non-exclusive, royalty-free licence to host, store, display, reproduce and transmit that content only to operate, promote and improve the service, and to make it available to the users you choose. This licence ends when you delete the content or your account, except for backups, legal retention, and content others have already licensed or shared. You confirm that you own or have all rights needed to publish your content and to grant this licence.</p>
+  <h3>4. Collaborations</h3>
+  <p class="small">RHYTHM helps creators find each other, but it is not a party to your collaboration, split, licence or payment agreement. Put ownership, credits, royalties and deliverables in writing between collaborators. RHYTHM does not decide who owns a joint work.</p>
+  <h3>5. Auctions, licensing and payments</h3>
+  <p class="small">The marketplace is a <b>prototype</b>. Auctions, bids, fees and settlements are simulated; no real payment is taken and no money changes hands. In production, the total price, platform fee and applicable taxes will be shown before you confirm a bid; payment will be handled by a certified gateway; RHYTHM will never store card details. A bid is an offer to buy the stated rights and is binding once accepted, subject to the <button type="button" class="lnk" onclick="R.nav('refund')">Refund &amp; Cancellation Policy</button>. Sellers must have the right to license the work and must describe the rights accurately.</p>
+  <h3>6. Acceptable use</h3>
+  <ul class="small policyList">
+    <li>Do not upload content you do not own or have permission to use, including music, lyrics, samples, images, logos or fonts.</li>
+    <li>Do not harass, threaten, dox, impersonate, stalk or defraud anyone.</li>
+    <li>Do not upload child sexual abuse material, non-consensual intimate imagery, or content that sexualises minors. Report it immediately and do not redistribute it.</li>
+    <li>Do not post spam, malware, scams, or manipulate votes, rankings, auctions or reports.</li>
+    <li>Do not break the law, infringe rights, or interfere with the service or other users' security.</li>
+  </ul>
+  <h3>7. Moderation, reports and suspension</h3>
+  <p class="small">You can report posts and users in the app. We may review, label, restrict or remove content, and may suspend or terminate accounts that break these terms, infringe rights, or create risk. We aim to act fairly and proportionately; you can appeal by contacting ${emailLink()}. Reports are not a substitute for emergency services.</p>
+  <h3>8. Copyright</h3>
+  <p class="small">We respond to copyright complaints under the process on our <button type="button" class="lnk" onclick="R.nav('copyright')">Copyright &amp; DMCA page</button>. Repeat infringers may be suspended or terminated.</p>
+  <h3>9. Privacy</h3>
+  <p class="small">Our <button type="button" class="lnk" onclick="R.nav('privacy')">Privacy Policy</button> explains how we handle personal data, cookies and consent.</p>
+  <h3>10. Disclaimers</h3>
+  <p class="small">RHYTHM is provided “as is” and “as available”. The prototype stores data in your browser and may lose it if you clear storage or change devices. We do not guarantee uninterrupted, error-free or secure operation, or that any content is accurate, lawful or non-infringing. Nothing in these terms excludes rights you have under mandatory consumer law.</p>
+  <h3>11. Limitation of liability</h3>
+  <p class="small">To the maximum extent permitted by law, RHYTHM is not liable for indirect, incidental, special, consequential or punitive loss, or for lost profits, revenue, data, goodwill or opportunities. Our total liability for a claim relating to the service is limited to the greater of the amount you paid RHYTHM in the 12 months before the claim or ₹1,000. This does not limit liability that cannot be limited by law (including fraud, death or personal injury caused by negligence).</p>
+  <h3>12. Indemnity</h3>
+  <p class="small">You agree to indemnify RHYTHM against claims, losses and reasonable costs arising from your content, your breach of these terms, or your infringement of another person's rights, except to the extent caused by our own unlawful conduct.</p>
+  <h3>13. Termination</h3>
+  <p class="small">You can delete your account at any time from your profile. We may suspend or terminate access for material breach, legal risk, or prolonged inactivity, with notice where practicable. Provisions that by their nature should survive (ownership, licences, disclaimers, liability, governing law) survive termination.</p>
+  <h3>14. Changes</h3>
+  <p class="small">We may update these terms. Material changes will be notified in the app or by email where required. Continued use after the effective date means you accept the updated terms.</p>
+  <h3>15. Governing law and disputes</h3>
+  <p class="small">These terms are governed by the laws of ${esc(GOVERNING_LAW)}, and the courts of ${esc(GOVERNING_LAW)} have jurisdiction, without affecting mandatory consumer rights or local law. Contact us first at ${emailLink()} so we can try to resolve the issue. Grievance officer: ${grievanceOfficer()}.</p>
+  <h3>16. Contact</h3>
+  <p class="small">${legalEntity()}, ${legalAddress()} · ${emailLink()} · <button type="button" class="lnk" onclick="R.nav('contact')">Contact page</button>.</p>
+  `, TERMS_VERSION);
+}
+function refundView() {
+  return legalPage("Refund & Cancellation Policy", `
+  <div class="legalPending" role="note"><b>Current status: no real payments.</b> RHYTHM is a prototype. Auctions and fees are simulated, no card or bank details are collected, and RHYTHM does not charge you. This page explains the production policy that will apply when payments go live.</div>
+  <h3>1. Prototype (today)</h3>
+  <p class="small">Nothing on RHYTHM costs money today. There is no checkout, no subscription and no charge, so no refund or cancellation is needed. Any “₹” amounts are illustrative demo data.</p>
+  <h3>2. Production: auctions and licences</h3>
+  <p class="small">When real payments are enabled, the following will apply. A winning bid forms a contract for the rights described in the listing. The total payable — winning bid, platform fee and applicable taxes — will be shown <b>before</b> you confirm. Bids are binding once accepted. If a seller cannot deliver the described rights or files, the buyer may request a refund within [PLACEHOLDER: REFUND WINDOW, e.g. 7 days] of the scheduled delivery date.</p>
+  <h3>3. Cancellations</h3>
+  <p class="small">You may cancel a bid before the auction closes if the interface allows it. After close, cancellation is at the seller's and RHYTHM's discretion and may affect your account. Sellers may cancel a listing before the first bid; after a bid, cancellation requires a valid reason and may lead to suspension. Statutory cancellation rights are not affected.</p>
+  <h3>4. Fees</h3>
+  <p class="small">Platform fees are disclosed before you bid and are generally non-refundable once the transaction completes, except where required by law or where RHYTHM cancels the transaction. If a transaction is refunded, the platform fee will be refunded pro rata unless the refund results from the buyer's breach.</p>
+  <h3>5. Failed or duplicate payments</h3>
+  <p class="small">If a payment fails, is reversed, or is charged twice, contact ${emailLink()} with the transaction reference. We will investigate with the payment gateway and refund verified duplicate or failed charges to the original payment method.</p>
+  <h3>6. Subscriptions</h3>
+  <p class="small">RHYTHM has no subscription today. If one is introduced, cancelling will be as easy as subscribing, and the cancellation terms will be shown before purchase.</p>
+  <h3>7. Chargebacks and disputes</h3>
+  <p class="small">Please contact us before raising a chargeback so we can resolve it. Fraudulent chargebacks may lead to suspension. Nothing here limits your right to dispute a charge with your bank or card issuer.</p>
+  <h3>8. How to request a refund</h3>
+  <p class="small">Email ${emailLink()} or use the <button type="button" class="lnk" onclick="R.nav('contact')">contact page</button> with your username, transaction reference, amount and reason. We aim to acknowledge within 3 business days and decide within 30 days (or the period required by law). Approved refunds go to the original payment method; bank processing times vary.</p>
+  <h3>9. Statutory rights</h3>
+  <p class="small">Nothing in this policy excludes or limits rights you have under mandatory consumer protection law in your country, including India's Consumer Protection Act 2019.</p>
+  `, POLICY_VERSION);
+}
+function disclaimerView() {
+  return legalPage("Disclaimer", `
+  <h3>1. Prototype status</h3>
+  <p class="small">RHYTHM is an interactive front-end prototype. Data is stored in your browser's local storage, not on a RHYTHM server. Features, prices, auctions, analytics and policies may change. Do not use real passwords, sensitive personal data or payment information in the demo.</p>
+  <h3>2. No professional advice</h3>
+  <p class="small">Content on RHYTHM — including licensing, copyright, tax, payment and collaboration information — is general information, not legal, tax, financial or other professional advice. Get independent advice before entering a contract or licensing a work.</p>
+  <h3>3. User content</h3>
+  <p class="small">Posts, lyrics, tracks, messages, auction listings and other content are created by users, not RHYTHM. We do not endorse or verify them. You are responsible for ensuring you have the rights to anything you upload. Report infringing or harmful content using the in-app report tool or the <button type="button" class="lnk" onclick="R.nav('copyright')">Copyright &amp; DMCA page</button>.</p>
+  <h3>4. No warranty</h3>
+  <p class="small">The service is provided “as is” and “as available”. To the maximum extent permitted by law, we disclaim warranties of merchantability, fitness for a particular purpose, non-infringement and uninterrupted or error-free operation. Mandatory consumer rights are not excluded.</p>
+  <h3>5. External links</h3>
+  <p class="small">Links to third-party sites (for example, GitHub) are provided for convenience. We do not control and are not responsible for their content, terms or privacy practices.</p>
+  <h3>6. Limitation</h3>
+  <p class="small">To the maximum extent permitted by law, RHYTHM is not liable for loss arising from reliance on the prototype, user content, or service interruption. The limitation in the <button type="button" class="lnk" onclick="R.nav('terms')">Terms of Service</button> applies.</p>
+  <h3>7. Contact</h3>
+  <p class="small">Questions about this disclaimer: ${emailLink()} · ${legalEntity()} · ${legalAddress()}.</p>
+  `, POLICY_VERSION);
+}
+function copyrightView() {
+  return legalPage("Copyright & DMCA", `
+  <p class="small">We respect copyright and respond to valid notices of infringement. RHYTHM is a prototype that stores content locally, but reports are reviewed by an administrator and production will use the same process with a designated grievance officer.</p>
+  <h3>1. How to send a takedown notice</h3>
+  <p class="small">Email ${emailLink()} with the subject “Copyright takedown” and include all of the following:</p>
+  <ul class="small policyList">
+    <li>Your full name, address, telephone number and email address.</li>
+    <li>Identification of the copyrighted work you say is infringed (title, author, registration if any, and a link or copy).</li>
+    <li>The exact URL, post title or username of the allegedly infringing material, with enough detail for us to find it.</li>
+    <li>A statement that you have a good-faith belief the use is not authorised by the copyright owner, its agent or the law.</li>
+    <li>A statement that the information in your notice is accurate and, under penalty of perjury, that you are the owner or authorised to act for the owner.</li>
+    <li>Your physical or electronic signature.</li>
+  </ul>
+  <h3>2. What happens next</h3>
+  <p class="small">We aim to acknowledge valid notices within 3 business days. We may remove or restrict the material, notify the uploader, and ask for a counter-notice. We may also remove repeat infringers and suspend or terminate their accounts. We keep a record of notices and actions for legal compliance.</p>
+  <h3>3. Counter-notice</h3>
+  <p class="small">If your content was removed by mistake or you have authorisation, email ${emailLink()} with the subject “Copyright counter-notice”. Include your name, address, phone, email, identification of the removed material and where it appeared, a statement under penalty of perjury that you have a good-faith belief the removal was a mistake or misidentification, your consent to the jurisdiction of the appropriate court, and your signature. We may restore the material unless the original complainant starts legal action within the period required by law.</p>
+  <h3>4. Misrepresentation</h3>
+  <p class="small">Knowingly making a false notice or counter-notice can lead to liability for damages, including costs and legal fees. Do not use this process to suppress legitimate criticism or competition.</p>
+  <h3>5. Repeat infringers</h3>
+  <p class="small">Accounts that repeatedly upload infringing material may be suspended or permanently terminated.</p>
+  <h3>6. Child safety and urgent harm</h3>
+  <p class="small">For child sexual abuse material or an immediate risk to a child, contact local emergency services first, then email ${emailLink()} with the subject “URGENT child safety”. Do not download, forward or redistribute the material.</p>
+  <h3>7. Designated contact</h3>
+  <p class="small">Copyright agent / grievance officer: ${grievanceOfficer()} · ${legalEntity()} · ${legalAddress()} · ${emailLink()}.</p>
+  `, POLICY_VERSION);
 }
 function contactView() {
   window.__ctT = Date.now();
   return `${ME ? crumbs([["Dashboard", "dash"], ["Contact", ""]]) : crumbs([["RHYTHM", "contact"], ["Contact", ""]])}
   <div class="glass"><h2 style="margin-top:0">Contact us</h2>
-  <p class="small muted">Questions, feedback or support requests. Fields marked * are required. Please don't include passwords.</p>
+  <p class="small muted">Questions, feedback or support requests. Fields marked * are required. Please don't include passwords or card details.</p>
+  <p class="small dim">Privacy / grievance: ${emailLink()} · Grievance officer: ${grievanceOfficer()}<br>
+  Copyright takedowns: see the <button type="button" class="lnk" onclick="R.nav('copyright')">Copyright &amp; DMCA page</button>. Urgent child-safety reports: contact local emergency services first.</p>
   <div id="ctMsg" aria-live="polite"></div>
   <label for="ctName">Name *</label><input id="ctName" name="name" autocomplete="name" maxlength="60" placeholder="Your name">
   <label for="ctEmail">Email *</label><input id="ctEmail" name="email" type="email" autocomplete="email" maxlength="120" placeholder="you@example.com">
@@ -576,16 +826,17 @@ export function submitContact() {
   if (g("ctBody").length > 2000) return fail("Message is too long (max 2,000 characters).");
   const subject = encodeURIComponent("[RHYTHM contact] " + g("ctSubject"));
   const body = encodeURIComponent(`From: ${g("ctName")} <${g("ctEmail")}>\n\n${g("ctBody")}`);
-  if (!CONTACT_EMAIL) {
+  const inbox = supportEmail();
+  if (!inbox) {
     box.innerHTML = `<div class="formOk" role="status">Your message is ready, but the owner hasn't published a support inbox yet. <button class="chip" onclick="R.copyContactText()">Copy message to clipboard</button></div>`;
     return;
   }
   box.innerHTML = `<div class="formOk" role="status">Opening your email app to send the message…</div>`;
-  location.href = `mailto:${CONTACT_EMAIL}?subject=${subject}&body=${body}`;
+  location.href = `mailto:${inbox}?subject=${subject}&body=${body}`;
 }
 export function copyContactText() {
   const g = (id) => document.getElementById(id).value.trim();
-  const txt = `To: RHYTHM support\nFrom: ${g("ctName")} <${g("ctEmail")}>\nSubject: ${g("ctSubject")}\n\n${g("ctBody")}`;
+  const txt = `To: RHYTHM support <${supportEmail() || "[PLACEHOLDER: PRIVACY / GRIEVANCE EMAIL — TODO(owner)]"}>\nFrom: ${g("ctName")} <${g("ctEmail")}>\nSubject: ${g("ctSubject")}\n\n${g("ctBody")}`;
   if (navigator.clipboard) navigator.clipboard.writeText(txt).then(() => toast("Message copied — send it to the support inbox."), () => toast("Copy failed — select the text manually."));
 }
 
@@ -630,6 +881,10 @@ function appView() {
   else if (TAB === "notifs") body = notifsView();
   else if (TAB === "profile") body = profileView();
   else if (TAB === "privacy") body = privacyView();
+  else if (TAB === "terms") body = termsView();
+  else if (TAB === "refund") body = refundView();
+  else if (TAB === "disclaimer") body = disclaimerView();
+  else if (TAB === "copyright") body = copyrightView();
   else if (TAB === "contact") body = contactView();
   else if (TAB === "admin") body = adminView();
   return `<div class="app">
@@ -644,6 +899,7 @@ function appView() {
         ${ava(m.username)}
       </div>
       ${m.suspended ? `<div class="glass"><b style="color:#fb7185">Account suspended</b><p class="small muted">Posting, voting and bidding are disabled.</p></div>` : ""}
+      ${m.minor && minorNeedsConsent(m) ? `<div class="glass minorNotice" role="status"><b>Under-18 account.</b> Paid auctions are locked until your parent or guardian's consent is verified. <button type="button" class="lnk" onclick="R.requestParentalConsent()">Email consent request</button> · <button type="button" class="lnk" onclick="R.nav('profile')">Details</button></div>` : ""}
       ${body}${footLinks()}
     </main>
   </div>
@@ -975,7 +1231,7 @@ function auctionsView() {
       <button class="chip" onclick="R.openAuction('${a.id}')">View & bid →</button></div></div>`;
   };
   return `<div class="card"><h3 style="margin-top:0">🔨 Auction billboard</h3>
-    <p class="small dim">List lyrics, beats & compositions. Highest valid bid at close wins a documented license. Platform fee: ${DB.commissionPct}% (configurable). To list: open one of your eligible posts → 🔨 Auction.</p>
+    <p class="small dim">List lyrics, beats &amp; compositions. Highest valid bid at close wins a documented license. Platform fee: ${DB.commissionPct}% (configurable). The fee and estimated total are shown before you bid. <b>Prototype:</b> no real payment is processed.</p>
     <h4>🔥 Highest bidding</h4>${live.map(card).join("") || `<p class="muted">No live auctions.</p>`}
     ${past.length ? `<h4>Finished</h4>${past.map(card).join("")}` : ""}</div>`;
 }
@@ -991,6 +1247,7 @@ function auctionDetail(id) {
     ${p ? `<p class="small">Linked work: <b>${esc(p.title)}</b> (${DOMAIN_LABEL[p.domain]})</p>` : ""}
     <p class="small">📜 Ownership: ${esc(a.ownership)}</p>
     <div class="row"><span class="badge">Start ₹${a.startPrice}</span>${a.reservePrice ? `<span class="badge">Reserve ₹${a.reservePrice}</span>` : ""}<span class="badge">Min step ₹${a.minInc}</span><span class="badge gold timer" data-ends="${a.endsAt}">…</span></div>
+    ${(() => { const next = (top ? top.amount : a.startPrice) + a.minInc; const fee = Math.round(next * DB.commissionPct / 100); return `<div class="disclosure" role="note"><b>Price &amp; fees before you bid:</b> next minimum bid ₹${next}; platform fee ${DB.commissionPct}% (₹${fee} on that amount); estimated total ₹${next + fee} before taxes. Any applicable taxes are shown before payment. <br><b>Prototype:</b> this auction is simulated — no real payment is taken and no money changes hands. In production a certified payment gateway will handle payment, and RHYTHM will never store card details. Read the <button type="button" class="lnk" onclick="R.nav('refund')">Refund &amp; Cancellation Policy</button>.</div>`; })()}
     <h3>Current: ${top ? `₹${top.amount} by ${esc((userById(top.userId) || {}).username)}` : `₹${a.startPrice} (no bids)`}</h3>
     ${a.status === "live" && a.sellerId !== ME ? `<div class="row"><input id="bidInput" type="number" class="grow" style="max-width:200px" placeholder="Min ₹${(top ? top.amount : a.startPrice) + a.minInc}"><button class="btn" onclick="R.bid('${a.id}')">Place bid</button></div>` : ""}
     ${tx ? `<p class="small">💰 Settled: buyer <b>${esc((userById(tx.buyerId) || {}).username)}</b> paid ₹${tx.amount} (platform fee ₹${tx.fee}). Files + license transferred per “${esc(a.rights)}”.</p>` : ""}
@@ -1059,6 +1316,7 @@ function profileView() {
       <div class="small dim">${esc(u.name)} · ${esc(u.city)}, ${esc(u.state)}</div></div>
       ${mine ? "" : `<button class="btn small ${following ? "ghost" : ""}" onclick="R.${following ? "unfollowUser" : "followUser"}('${u.id}',true)">${following ? "✓ Following" : "＋ Follow"}</button>
       <button class="btn small ghost" onclick="R.contactUser('${u.id}')">💬 Message</button>
+      <button class="btn small ghost" onclick="R.openUserReport('${u.id}')">⚑ Report</button>
       ${latestOpen ? `<button class="btn small" onclick="R.openCollab('${latestOpen.id}')">🤝 Collaborate</button>` : ""}`}
     </div>
     <p class="muted">${esc(u.bio || "")}</p>
@@ -1070,8 +1328,15 @@ function profileView() {
       <div class="stat"><div class="n">${rank ? "#" + rank : "—"}</div><div class="l">${DOMAIN_LABEL[u.primary]} rank</div></div>
     </div>
     ${st.badges.length ? `<div>${st.badges.map((b) => `<span class="badge hot">🏅 ${esc(b)}</span>`).join("")}</div>` : ""}
-    ${mine ? `<div class="glass" style="margin:12px 0 0"><h3 style="margin-top:0">⚙ Profile & settings</h3>
-      <label>Bio</label><div class="row"><input id="bioInput" class="grow" value="${esc(u.bio || "")}"><button class="btn small" onclick="R.saveBio()">Save</button></div>
+    ${mine ? `<div class="glass" style="margin:12px 0 0"><h3 style="margin-top:0">⚙ Profile &amp; settings</h3>
+      <div class="grid2"><div><label for="pfName">Name</label><input id="pfName" maxlength="60" value="${esc(u.name)}"></div>
+      <div><label for="pfCity">City</label><input id="pfCity" maxlength="60" value="${esc(u.city === "—" ? "" : u.city)}"></div></div>
+      <label for="pfBio">Bio</label><textarea id="pfBio" maxlength="300" rows="2">${esc(u.bio || "")}</textarea>
+      <div class="row"><button class="btn small" onclick="R.saveProfile()">Save changes</button></div>
+      <p class="small dim">To correct your email, username or date of birth, use the <button type="button" class="lnk" onclick="R.nav('contact')">contact page</button> or email ${emailLink()}.</p>
+      ${u.minor ? `<div class="parentalNotice">${u.parentalConsent && u.parentalConsent.status === "verified" ? "✅ Parental consent verified. Paid auction features are available." : "⏳ Under-18 account: parental consent is pending verification. Paid auctions are locked."} ${minorNeedsConsent(u) ? `<button type="button" class="lnk" onclick="R.requestParentalConsent()">Email a consent request</button>` : ""}</div>` : ""}
+      <h4>Privacy &amp; data</h4>
+      <div class="row"><button class="btn small ghost" onclick="R.downloadMyData()">⬇ Download my data</button><button class="btn small ghost" onclick="R.openConsentSettings()">Cookie settings</button><button class="btn small ghost" onclick="R.nav('terms')">Terms</button><button class="btn small ghost" onclick="R.nav('privacy')">Privacy</button></div>
       <p class="small dim">Sales: ${sales.length} · Revenue: ₹${sales.reduce((s, t) => s + t.amount - t.fee, 0)} · Active listings: ${listings.filter((a) => a.status === "live").length}</p>
       <div class="row"><button class="btn small ghost" onclick="R.resetDemo()">↺ Reset demo data</button><button class="btn small danger" onclick="R.deleteAccount()">Delete my account</button></div>
       <p class="small dim">Demo honesty note: all data lives in this browser's localStorage only — nothing is shared with other users or devices.</p></div>` : ""}
@@ -1096,9 +1361,11 @@ function adminView() {
     <div class="row"><span class="badge">Users: ${DB.users.length}</span><span class="badge">Posts: ${DB.posts.length}</span><span class="badge">Live auctions: ${DB.auctions.filter((a) => a.status === "live").length}</span><span class="badge">Volume: ₹${DB.transactions.reduce((s, t) => s + t.amount, 0)}</span>
     <span class="grow"></span><label style="margin:0">Commission %</label><input id="commInput" type="number" value="${DB.commissionPct}" style="max-width:80px"><button class="btn small" onclick="R.setComm()">Set</button></div></div>
   <div class="card"><h4>Users</h4><table><tr><th>User</th><th>State</th><th>Posts</th><th>Status</th><th></th></tr>
-    ${DB.users.map((u) => `<tr><td>${esc(u.username)}${u.admin ? " (admin)" : ""}</td><td>${esc(u.state)}</td><td>${DB.posts.filter((p) => p.userId === u.id).length}</td><td>${u.suspended ? "suspended" : "active"}</td><td>${!u.admin ? `<button class="chip" onclick="R.suspendUser('${u.id}')">${u.suspended ? "Unsuspend" : "Suspend"}</button>` : ""}</td></tr>`).join("")}</table></div>
+    ${DB.users.map((u) => `<tr><td>${esc(u.username)}${u.admin ? " (admin)" : ""}${u.minor ? " (minor)" : ""}</td><td>${esc(u.state)}</td><td>${DB.posts.filter((p) => p.userId === u.id).length}</td><td>${u.suspended ? "suspended" : "active"}</td><td>${!u.admin ? `<button class="chip" onclick="R.suspendUser('${u.id}')">${u.suspended ? "Unsuspend" : "Suspend"}</button>` : ""}</td></tr>`).join("")}</table></div>
+  <div class="card"><h4>👤 Parental consent (under 18)</h4>
+    ${DB.users.filter((u) => u.minor && !u.admin).map((u) => { const pc = u.parentalConsent || {}; return `<div class="small">@${esc(u.username)} · guardian: ${esc(pc.guardianName || "—")} · ${esc(pc.guardianEmail || "—")} · status: <b>${esc(pc.status || "none")}</b> ${pc.status === "verified" ? `<button class="chip" onclick="R.verifyParentalConsent('${u.id}',false)">Revoke</button>` : `<button class="chip" onclick="R.verifyParentalConsent('${u.id}',true)">Mark verified</button>`}</div>`; }).join("") || `<p class="small dim">No minor accounts.</p>`}</div>
   <div class="card"><h4>⚑ Reports (${DB.reports.filter((r) => r.status === "open").length} open)</h4>
-    ${DB.reports.slice().reverse().map((r) => { const p = postById(r.postId); return `<div class="small">⚑ <b>${esc(p ? p.title : "deleted post")}</b> reported by ${esc((userById(r.by) || {}).username)} · “${esc(r.reason)}” [${r.status}] ${r.status === "open" ? `<button class="chip" onclick="R.resolveReport('${r.id}','dismiss')">Dismiss</button> <button class="chip" onclick="R.resolveReport('${r.id}','remove')">Remove post</button>` : ""}</div>`; }).join("") || `<p class="small dim">No reports.</p>`}</div>
+    ${DB.reports.slice().reverse().map((r) => { const p = r.postId ? postById(r.postId) : null; const u = r.userId ? userById(r.userId) : null; const label = p ? p.title : u ? "@" + u.username : "deleted target"; const act = r.targetType === "user" ? `<button class="chip" onclick="R.resolveReport('${r.id}','suspend')">Suspend user</button>` : `<button class="chip" onclick="R.resolveReport('${r.id}','remove')">Remove post</button>`; return `<div class="small">⚑ <b>${esc(label)}</b> ${r.targetType === "user" ? "(user)" : "(post)"} reported by ${esc((userById(r.by) || {}).username)} · “${esc(r.reason)}” [${r.status}] ${r.status === "open" ? `<button class="chip" onclick="R.resolveReport('${r.id}','dismiss')">Dismiss</button> ${act}` : ""}</div>`; }).join("") || `<p class="small dim">No reports.</p>`}</div>
   <div class="card"><h4>Vote-fraud flags (≥8 votes in an hour)</h4>${fraud.map((f) => `<div class="small">🚩 ${esc(f.u.username)} — ${f.total} total votes, burst ${f.burst}/hr</div>`).join("") || `<p class="small dim">None.</p>`}</div>`;
 }
 
@@ -1158,9 +1425,13 @@ function modalHtml() {
       ${(me().playlists || []).map((pl) => `<div class="row" style="margin:6px 0"><b class="grow">${esc(pl.name)}</b><span class="small dim">${pl.postIds.length} tracks</span><button class="chip" onclick="R.addToPlaylist('${pl.id}')">＋ Add</button></div>`).join("")}
       <div class="row" style="margin-top:12px"><button class="btn ghost" onclick="R.openPlaylistModal('${esc(MODAL.target || "")}')">＋ New playlist</button><button class="btn ghost" onclick="R.closeModal()">Cancel</button></div>`;
   } else if (MODAL.kind === "report") {
-    inner = `<h3 id="modalTitle" style="margin-top:0">⚑ Report post</h3>
-      <label for="repReason">Reason</label><select id="repReason" aria-label="Reason for report"><option>Copyright / plagiarism</option><option>Offensive content</option><option>Spam / scam</option><option>Other</option></select>
-      <div class="row" style="margin-top:12px"><button class="btn" onclick="R.sendReport('${MODAL.postId}')">Submit report</button><button class="btn ghost" onclick="R.closeModal()">Cancel</button></div>`;
+    const isUser = MODAL.targetType === "user";
+    const targetName = isUser ? `@${esc((userById(MODAL.targetId) || {}).username || "unknown")}` : `“${esc((postById(MODAL.targetId) || {}).title || "this post")}”`;
+    inner = `<h3 id="modalTitle" style="margin-top:0">⚑ Report ${isUser ? "user" : "post"}</h3>
+      <p class="small muted">Reporting ${targetName}. Reports are reviewed by an administrator.</p>
+      <label for="repReason">Reason</label><select id="repReason" aria-label="Reason for report">${REPORT_REASONS.map((r) => `<option>${esc(r)}</option>`).join("")}</select>
+      <p class="small dim">For immediate danger or child sexual abuse material, contact local emergency services first and email ${emailLink()} with “URGENT child safety”. Do not download, forward or redistribute the material.</p>
+      <div class="row" style="margin-top:12px"><button class="btn" onclick="R.${isUser ? "sendUserReport" : "sendReport"}('${MODAL.targetId}')">Submit report</button><button class="btn ghost" onclick="R.closeModal()">Cancel</button></div>`;
   }
   return `<div class="modal" onclick="if(event.target===this)R.closeModal()"><div class="modalBox" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1"><button type="button" class="modalClose" aria-label="Close dialog" onclick="R.closeModal()">✕</button>${inner}</div></div>`;
 }
@@ -1184,6 +1455,49 @@ export function toggleDom(d) {
   if (ps) ps.innerHTML = SIGNUP_DOMAINS.map((x) => `<option value="${x}">${DOMAIN_LABEL[x]}</option>`).join("");
 }
 
+/** Clear the inline terms error as soon as the user ticks the box. */
+export function clearTermsError() {
+  const row = document.getElementById("termsCheckRow");
+  if (row) row.classList.remove("error");
+  const box = document.getElementById("suTermsCheck");
+  if (box) box.removeAttribute("aria-invalid");
+  const err = document.getElementById("termsError");
+  if (err) { err.hidden = true; err.textContent = ""; }
+}
+
+/** Live age feedback on signup: reveals the guardian block only for minors. */
+export function checkDob() {
+  const dob = (document.getElementById("suDobInput")?.value || "").trim();
+  const hint = document.getElementById("dobHint");
+  const box = document.getElementById("parentalBox");
+  const age = ageFromDob(dob);
+  if (!box) return;
+  if (age == null) {
+    box.hidden = true;
+    box.setAttribute("aria-hidden", "true");
+    if (hint) hint.textContent = "";
+    return;
+  }
+  if (age < MIN_AGE) {
+    box.hidden = true;
+    box.setAttribute("aria-hidden", "true");
+    if (hint) hint.textContent = `You must be at least ${MIN_AGE} to use RHYTHM.`;
+    return;
+  }
+  if (age > 120) {
+    box.hidden = true;
+    box.setAttribute("aria-hidden", "true");
+    if (hint) hint.textContent = "Please check the date of birth you entered.";
+    return;
+  }
+  const minor = age < MAJORITY_AGE;
+  box.hidden = !minor;
+  box.setAttribute("aria-hidden", minor ? "false" : "true");
+  if (hint) hint.textContent = minor
+    ? "Under 18: a parent or guardian must consent. Paid auctions stay locked until consent is verified."
+    : "You can create an account now.";
+}
+
 export async function signup() {
   const val = (id) => (document.getElementById(id)?.value || "").trim();
   const raw = (id) => (document.getElementById(id)?.value || "");
@@ -1198,19 +1512,41 @@ export async function signup() {
   if (p1.length < 8) return toast("Password must be at least 8 characters.");
   if (p1.length > 200) return toast("Password is too long (max 200 characters).");
   if (!dob || !Number.isFinite(Date.parse(dob))) return toast("Enter your date of birth.");
-  const age = (Date.now() - Date.parse(dob)) / (365.25 * 86400000);
-  if (age < 13) return toast("You must be at least 13 years old to create an account.");
+  const age = ageFromDob(dob);
+  if (age == null) return toast("Enter a valid date of birth.");
+  if (age < MIN_AGE) return toast(`You must be at least ${MIN_AGE} years old to create an account.`);
   if (age > 120) return toast("Please check the date of birth you entered.");
+  const minor = age < MAJORITY_AGE;
+  let parentalConsent = null;
+  if (minor) {
+    const gn = val("suGuardianName"), ge = val("suGuardianEmail");
+    const gc = document.getElementById("suGuardianCheck");
+    if (gn.length < 2 || gn.length > 60) return toast("Enter your parent/guardian's full name (2–60 characters).");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(ge) || ge.length > 120) return toast("Enter a valid parent/guardian email address.");
+    if (!gc || !gc.checked) return toast("Your parent/guardian must consent before you create an account.");
+    parentalConsent = { required: true, status: "pending_verification", guardianName: gn, guardianEmail: ge, declaredAt: Date.now(), version: TERMS_VERSION };
+  }
   if (bio.length > 300) return toast("Bio is too long (max 300 characters).");
   if (city.length > 60) return toast("City name is too long.");
   if (DB.users.some((u) => (u.username || "").toLowerCase() === username.toLowerCase())) return toast("Username taken.");
   if (DB.users.some((u) => (u.email || "").toLowerCase() === email.toLowerCase())) return toast("Email already registered.");
+  // Terms of Service + Privacy Policy acceptance is required (no pre-ticked box).
+  const termsBox = document.getElementById("suTermsCheck");
+  if (!termsBox || !termsBox.checked) {
+    const row = document.getElementById("termsCheckRow");
+    if (row) row.classList.add("error");
+    if (termsBox) termsBox.setAttribute("aria-invalid", "true");
+    const err = document.getElementById("termsError");
+    if (err) { err.hidden = false; err.textContent = "Please agree to the Terms of Service and Privacy Policy to continue."; }
+    return toast("Please agree to the Terms of Service and Privacy Policy to continue.");
+  }
   const primarySel = document.getElementById("suPrimaryInput");
   const primary = primarySel && SIGNUP_DOMAINS.includes(primarySel.value) ? primarySel.value : SIGNUP_DOMAINS[0];
   const u = {
     id: uid("u"), name, username, email, pass: await hashPassword(p1), pic: "", dob, city: city || "—",
     state: val("suStateInput") || REGIONS[0], bio, domains: SIGNUP_DOMAINS.slice(), primary,
-    suspended: false, admin: false, createdAt: Date.now(),
+    suspended: false, admin: false, createdAt: Date.now(), minor, parentalConsent,
+    termsAcceptedAt: Date.now(), termsVersion: TERMS_VERSION, privacyVersion: PRIVACY_VERSION,
   };
   DB.users.push(u);
   ME = u.id;
@@ -1218,8 +1554,9 @@ export async function signup() {
   resetUiState();
   B.state = myState();
   notify(ME, "Welcome to RHYTHM! Publish your first post to enter your state leaderboard.", "info");
+  if (minor) notify(ME, "Under-18 account: paid auctions stay locked until a parent/guardian's consent is verified.", "info");
   save(); render(); setHash("#/dash");
-  toast(`Welcome, ${username}!`);
+  toast(minor ? `Welcome, ${username}! Paid auctions unlock after parental consent is verified.` : `Welcome, ${username}!`);
 }
 
 const LOCK_KEY = "rhythm_login_lock_v1";
@@ -1307,6 +1644,7 @@ export function openCollab(postId) {
 }
 export function openAuctionCreate(postId) {
   if (needAuth()) return;
+  if (minorNeedsConsent(me())) return toast("Under-18 accounts need verified parental consent before creating paid auctions.");
   const p = postById(postId);
   if (!p || p.userId !== ME) return toast("You can only auction your own work.");
   MODAL = { kind: "auction", postId, title: p.title + " — rights for sale" }; render();
@@ -1316,7 +1654,14 @@ export function openReport(postId) {
   const p = postById(postId);
   if (!p) return toast("That post no longer exists.");
   if (p.userId === ME) return toast("You can't report your own post.");
-  MODAL = { kind: "report", postId }; render();
+  MODAL = { kind: "report", targetType: "post", targetId: postId }; render();
+}
+export function openUserReport(userId) {
+  if (needAuth()) return;
+  const u = userById(userId);
+  if (!u) return toast("That user no longer exists.");
+  if (u.id === ME) return toast("You can't report yourself.");
+  MODAL = { kind: "report", targetType: "user", targetId: userId }; render();
 }
 export function openProject(id) { VIEW_PROJECT = id; render(); }
 export function openAuction(id) { VIEW_AUCTION = id; render(); }
@@ -1568,6 +1913,7 @@ export function completeProject(pid) {
 
 export function createAuction(postId) {
   if (needAuth()) return;
+  if (minorNeedsConsent(me())) return toast("Under-18 accounts need verified parental consent before creating paid auctions.");
   const post = postById(postId);
   if (!post || post.userId !== ME) return toast("You can only auction your own work.");
   if (DB.auctions.some((a) => a.postId === postId && a.status === "live")) return toast("That post already has a live auction.");
@@ -1592,6 +1938,7 @@ export function createAuction(postId) {
 
 export function bid(auctionId) {
   if (needAuth()) return;
+  if (minorNeedsConsent(me())) return toast("Under-18 accounts need verified parental consent before bidding in paid auctions.");
   const a = DB.auctions.find((x) => x.id === auctionId);
   if (!a || a.status !== "live" || Date.now() >= a.endsAt) return toast("This auction is closed.");
   const amt = Math.round(+document.getElementById("bidInput").value);
@@ -1705,13 +2052,23 @@ export function markRead() {
   save(); render();
 }
 
-export function saveBio() {
+export function saveProfile() {
   if (needAuth()) return;
-  const bio = (document.getElementById("bioInput")?.value || "").trim();
+  const name = (document.getElementById("pfName")?.value || "").trim();
+  const city = (document.getElementById("pfCity")?.value || "").trim();
+  const bio = (document.getElementById("pfBio")?.value || "").trim();
+  if (!name) return toast("Name can't be empty.");
+  if (name.length > 60) return toast("Name is too long (max 60 characters).");
+  if (city.length > 60) return toast("City name is too long.");
   if (bio.length > 300) return toast("Bio is too long (max 300 characters).");
-  me().bio = bio;
+  const u = me();
+  u.name = name;
+  u.city = city || "—";
+  u.bio = bio;
   save(); render(); toast("Profile saved.");
 }
+// Kept for older links/bookmarks; the profile form now saves name, city and bio.
+export function saveBio() { saveProfile(); }
 
 export function deleteAccount() {
   if (needAuth()) return;
@@ -1719,7 +2076,7 @@ export function deleteAccount() {
   const busy = DB.projects.filter((p) => p.status !== "completed" && p.status !== "cancelled" && p.members.some((m) => m.userId === ME) && p.members.length > 1);
   if (live.length) return toast("Close your auctions with bids before deleting.");
   if (busy.length) return toast("Leave or finish shared projects before deleting.");
-  if (!confirm(`Permanently delete @${me().username} and all your posts, votes, chats and listings?`)) return;
+  if (!confirm(`Permanently delete @${me().username} and all your posts, votes, chats, listings and reports? This cannot be undone.`)) return;
   DB.posts = DB.posts.filter((p) => p.userId !== ME);
   DB.posts.forEach((p) => { p.votes = p.votes.filter((v) => v.u !== ME); p.comments = p.comments.filter((c) => c.u !== ME); });
   DB.auctions = DB.auctions.filter((a) => a.sellerId !== ME);
@@ -1728,18 +2085,98 @@ export function deleteAccount() {
   DB.projects = DB.projects.filter((p) => !p.members.some((m) => m.userId === ME));
   DB.threads = DB.threads.filter((t) => !t.members.includes(ME));
   DB.notifications = DB.notifications.filter((n) => n.userId !== ME);
-  DB.reports = DB.reports.filter((r) => r.by !== ME);
+  DB.reports = DB.reports.filter((r) => r.by !== ME && !(r.targetType === "user" && r.targetId === ME));
+  DB.transactions = DB.transactions.filter((t) => t.sellerId !== ME && t.buyerId !== ME);
   DB.users = DB.users.filter((u) => u.id !== ME);
   save(); stopPreview(); ME = null; setSession(null); resetUiState(); render(); setHash("");
-  toast("Account deleted.");
+  toast("Account deleted. Your local data has been erased.");
+}
+
+/** Data-portability export: a JSON copy of this user's local records. */
+export function downloadMyData() {
+  if (needAuth()) return;
+  const u = me();
+  const posts = DB.posts.filter((p) => p.userId === u.id);
+  const ids = new Set(posts.map((p) => p.id));
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    notice: "RHYTHM local data export. This prototype stores all data in this browser only.",
+    account: {
+      id: u.id, name: u.name, username: u.username, email: u.email, dob: u.dob,
+      city: u.city, state: u.state, bio: u.bio, domains: u.domains, primary: u.primary,
+      minor: Boolean(u.minor), parentalConsent: u.parentalConsent || null,
+      termsVersion: u.termsVersion, privacyVersion: u.privacyVersion,
+      termsAcceptedAt: u.termsAcceptedAt || null, createdAt: u.createdAt,
+    },
+    posts: posts.map((p) => ({ id: p.id, title: p.title, body: p.body, domain: p.domain, genre: p.genre, lang: p.lang, tags: p.tags, createdAt: p.createdAt, votes: p.votes.length, comments: p.comments })),
+    votes: DB.posts.flatMap((p) => p.votes.filter((v) => v.u === u.id).map((v) => ({ postId: p.id, value: v.v, ts: v.ts }))),
+    comments: DB.posts.flatMap((p) => p.comments.filter((c) => c.u === u.id).map((c) => ({ postId: p.id, text: c.text, ts: c.ts }))),
+    favorites: u.favs || [], following: u.following || [], playlists: u.playlists || [],
+    auctions: DB.auctions.filter((a) => a.sellerId === u.id),
+    bids: DB.auctions.flatMap((a) => a.bids.filter((b) => b.userId === u.id).map((b) => ({ auctionId: a.id, amount: b.amount, ts: b.ts }))),
+    transactions: DB.transactions.filter((t) => t.sellerId === u.id || t.buyerId === u.id),
+    projects: DB.projects.filter((p) => p.members.some((m) => m.userId === u.id)),
+    threads: DB.threads.filter((t) => t.members.includes(u.id)),
+    notifications: DB.notifications.filter((n) => n.userId === u.id),
+    reportsFiled: DB.reports.filter((r) => r.by === u.id),
+    consent: getConsent(),
+    storageKeys: { db: DB_KEY, session: SESSION_KEY, consent: CONSENT_KEY },
+    postIdCount: ids.size,
+  };
+  try {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `rhythm-data-${u.username}-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast("Data export downloaded as JSON.");
+  } catch (e) {
+    toast("Could not create the export in this browser.");
+  }
+}
+
+export function requestParentalConsent() {
+  if (needAuth()) return;
+  const u = me();
+  if (!u.minor) return toast("This account is not marked as under 18.");
+  const pc = u.parentalConsent || {};
+  if (!pc.guardianEmail) return toast("Add your parent/guardian's email in the signup or contact us to update it.");
+  const subject = encodeURIComponent("RHYTHM parental consent request");
+  const body = encodeURIComponent(`Hello,\n\n@${u.username} (${u.name}) has an account on RHYTHM, which is for users aged ${MIN_AGE}+. Because they are under 18, we need a parent or guardian's consent.\n\nPlease reply to this message confirming that you consent to their use of RHYTHM. You can review the Privacy Policy and Terms in the app.\n\nAccount: @${u.username}\nGuardian on file: ${pc.guardianName || "(not provided)"}\n\nIf you did not expect this, please ignore it and contact us.\n\nRHYTHM`);
+  location.href = `mailto:${pc.guardianEmail}?subject=${subject}&body=${body}`;
+  toast("Opening an email to your parent/guardian. Paid auctions stay locked until consent is verified.");
+}
+
+export function verifyParentalConsent(userId, verified) {
+  if (!isAdmin()) return toast("Admin access required.");
+  const u = userById(userId);
+  if (!u || !u.minor) return toast("That account is not a minor account.");
+  u.parentalConsent = { ...(u.parentalConsent || {}), required: true, status: verified ? "verified" : "pending_verification", verifiedAt: verified ? Date.now() : null };
+  notify(u.id, verified
+    ? "Your parent/guardian's consent has been verified. Paid auction features are now available."
+    : "Parental consent verification was revoked. Paid auctions are locked again.", "info");
+  save(); render(); toast(verified ? "Parental consent marked verified." : "Parental consent verification revoked.");
 }
 
 export function sendReport(postId) {
   if (needAuth()) return;
   const p = postById(postId);
   if (!p || p.userId === ME) return toast("You can't report this post.");
-  if (DB.reports.some((r) => r.postId === postId && r.by === ME && r.status === "open")) return toast("You already reported this post.");
-  DB.reports.push({ id: uid("r"), postId, by: ME, reason: document.getElementById("repReason").value, status: "open", ts: Date.now() });
+  if (DB.reports.some((r) => r.targetType === "post" && r.targetId === postId && r.by === ME && r.status === "open")) return toast("You already reported this post.");
+  const reason = document.getElementById("repReason")?.value || "Other";
+  DB.reports.push({ id: uid("r"), targetType: "post", targetId: postId, postId, by: ME, reason, status: "open", ts: Date.now() });
+  MODAL = null; save(); render(); toast("Reported. Admins will review.");
+}
+
+export function sendUserReport(userId) {
+  if (needAuth()) return;
+  const u = userById(userId);
+  if (!u || u.id === ME) return toast("You can't report this user.");
+  if (DB.reports.some((r) => r.targetType === "user" && r.targetId === userId && r.by === ME && r.status === "open")) return toast("You already reported this user.");
+  const reason = document.getElementById("repReason")?.value || "Other";
+  DB.reports.push({ id: uid("r"), targetType: "user", targetId: userId, userId, by: ME, reason, status: "open", ts: Date.now() });
   MODAL = null; save(); render(); toast("Reported. Admins will review.");
 }
 
@@ -1755,10 +2192,34 @@ export function resolveReport(id, how) {
   if (!isAdmin()) return toast("Admin access required.");
   const r = DB.reports.find((x) => x.id === id);
   if (!r || r.status !== "open") return;
-  r.status = how === "remove" ? "acted" : "dismissed";
-  if (how === "remove") DB.posts = DB.posts.filter((p) => p.id !== r.postId);
+  if (how === "dismiss") r.status = "dismissed";
+  else {
+    r.status = "acted";
+    if (how === "remove" && r.targetType !== "user") DB.posts = DB.posts.filter((p) => p.id !== (r.targetId || r.postId));
+    if (how === "suspend" && r.targetType === "user") {
+      const u = userById(r.targetId);
+      if (u && !u.admin) u.suspended = true;
+    }
+  }
   save(); render();
 }
+
+// ---- Consent, accessibility and print actions ------------------------------
+export function acceptAnalytics() { setConsentRecord(true); }
+export function rejectAnalytics() { setConsentRecord(false); }
+export function openConsentSettings() {
+  CONSENT_PROMPT = true;
+  render();
+  toast("Choose whether optional analytics may run. Essential storage stays on.");
+}
+export function skipToMain() {
+  const el = document.getElementById("main");
+  if (!el) return;
+  el.setAttribute("tabindex", "-1");
+  el.focus();
+  el.scrollIntoView({ block: "start" });
+}
+export function printPage() { window.print(); }
 
 export function setComm() {
   if (!isAdmin()) return toast("Admin access required.");

@@ -3,6 +3,46 @@
 
 export const DAY = 86400000;
 
+/** Global floor for RHYTHM accounts, and the age of majority used for consent. */
+export const MIN_AGE = 13;
+export const MAJORITY_AGE = 18;
+
+/**
+ * Whole years between a date of birth and a point in time, using UTC so the
+ * result does not depend on the machine's timezone. Accepts YYYY-MM-DD (the
+ * value of <input type="date">) and, as a fallback, any Date.parse-able string.
+ * Returns null for missing/invalid dates.
+ */
+export function ageFromDob(dob, now = Date.now()) {
+  if (dob == null || dob === "") return null;
+  let y, m, d;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dob));
+  if (match) {
+    y = Number(match[1]); m = Number(match[2]); d = Number(match[3]);
+  } else {
+    const t = Date.parse(String(dob));
+    if (!Number.isFinite(t)) return null;
+    const dt = new Date(t);
+    y = dt.getUTCFullYear(); m = dt.getUTCMonth() + 1; d = dt.getUTCDate();
+  }
+  const check = new Date(Date.UTC(y, m - 1, d));
+  if (!Number.isFinite(check.getTime()) || check.getUTCFullYear() !== y || check.getUTCMonth() + 1 !== m || check.getUTCDate() !== d) return null;
+  const at = new Date(now);
+  if (!Number.isFinite(at.getTime())) return null;
+  let age = at.getUTCFullYear() - y;
+  if (at.getUTCMonth() + 1 < m || (at.getUTCMonth() + 1 === m && at.getUTCDate() < d)) age--;
+  return age >= 0 && age <= 150 ? age : null;
+}
+
+/** "under_minimum" (<13), "minor" (13–17), "adult" (18+), or "invalid". */
+export function ageBand(dob, now = Date.now()) {
+  const age = ageFromDob(dob, now);
+  if (age == null) return "invalid";
+  if (age < MIN_AGE) return "under_minimum";
+  if (age < MAJORITY_AGE) return "minor";
+  return "adult";
+}
+
 /** Net votes on a post within a rolling window. */
 export function postScore(post, windowMs, now = Date.now()) {
   const since = now - windowMs;
