@@ -442,8 +442,9 @@ body::after {
 /* ── Main content ────────────────────────────────────────────────── */
 .main {
   min-width: 0;
+  width: 100%;
+  max-width: none;
   padding: 26px 30px 185px;
-  max-width: 1160px;
 }
 @media (prefers-reduced-motion: no-preference) {
   .main { animation: fadeUp 0.22s var(--ease) both; }
