@@ -1,0 +1,38 @@
+:root {
+  /* Deep Dark Backgrounds */
+  --bg-deep: #090710;       /* Near-black base */
+  --bg-surface: #151024;    /* Solid fallback for glass cards */
+  
+  /* Glassmorphism Tokens */
+  --glass-fill: rgba(255, 255, 255, 0.03);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-blur: 16px;
+  
+  /* Accents */
+  --accent-violet: #8B5CF6; /* Primary hero accent */
+  --accent-magenta: #D946EF;/* Secondary accent (tiny amounts only) */
+  
+  /* Typography */
+  --text-primary: #F3F4F6;
+  --text-secondary: #9CA3AF;
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  
+  /* Radii */
+  --radius-card: 24px;
+  --radius-pill: 999px;
+}
+
+body {
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  margin: 0;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}

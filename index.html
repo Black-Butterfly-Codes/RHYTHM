@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#06050e">
-  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#F6F3EC" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1B1530" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
   <meta name="referrer" content="strict-origin-when-cross-origin">
 
   <title>RHYTHM | Music Collaboration Platform</title>
@@ -16,8 +17,9 @@
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
 
-  <!-- Self-hosted font: no third-party requests -->
-  <link rel="preload" href="./assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <!-- Self-hosted fonts: no third-party requests (OFL-1.1, see LICENSES.md) -->
+  <link rel="preload" href="./assets/fonts/dmsans-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./assets/fonts/pixelify-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
 
   <!-- Open Graph -->
   <meta property="og:type" content="website">
@@ -64,20 +66,28 @@
   }
   </script>
 
+  <link rel="stylesheet" href="./design-tokens.css">
   <link rel="stylesheet" href="./style.css">
+  <script>
+    /* Apply the saved theme before first paint (no flash, no network). */
+    try {
+      var t = localStorage.getItem("rhythm_theme_v1");
+      if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+    } catch (e) { /* storage may be blocked */ }
+  </script>
 </head>
 
 <body>
   <div id="bootCtn"></div>
 
   <noscript>
-    <main style="max-width:720px;margin:40px auto;padding:24px;font-family:system-ui,sans-serif;color:#EDE9FE;background:#06050e">
+    <main style="max-width:720px;margin:40px auto;padding:24px;font-family:system-ui,sans-serif;color:#1B1530;background:#F6F3EC;border:2px solid #1B1530;border-radius:20px">
       <h1>RHYTHM</h1>
       <p><strong>Discover Talent. Create Together. Rise Together.</strong></p>
       <p>RHYTHM needs JavaScript to run. It is a client-side prototype: all demo data stays in your own browser and nothing is uploaded to a server.</p>
       <p>Independent music creators across India can find singers, instrumentalists, lyricists, composers and beatmakers, collaborate on projects, and license original work through documented auctions.</p>
-      <p><a href="./?page=privacy" style="color:#22D3EE">Privacy</a> · <a href="./?page=terms" style="color:#22D3EE">Terms</a> · <a href="./?page=refund" style="color:#22D3EE">Refunds</a> · <a href="./?page=disclaimer" style="color:#22D3EE">Disclaimer</a> · <a href="./?page=copyright" style="color:#22D3EE">Copyright / DMCA</a> · <a href="./?page=contact" style="color:#22D3EE">Contact</a> · <a href="https://github.com/Black-Butterfly-Codes/RHYTHM" style="color:#22D3EE">Source code</a></p>
-      <p style="font-size:13px;color:#A1A1AA">RHYTHM is a prototype for users aged 13+. Under-18 accounts need parent/guardian consent. No real payments are processed. See the policy pages for details and owner placeholders.</p>
+      <p><a href="./?page=privacy" style="color:#5E6B2A">Privacy</a> · <a href="./?page=terms" style="color:#5E6B2A">Terms</a> · <a href="./?page=cookie" style="color:#5E6B2A">Cookies</a> · <a href="./?page=guidelines" style="color:#5E6B2A">Community Guidelines</a> · <a href="./?page=refund" style="color:#5E6B2A">Refunds</a> · <a href="./?page=disclaimer" style="color:#5E6B2A">Disclaimer</a> · <a href="./?page=copyright" style="color:#5E6B2A">Copyright / DMCA</a> · <a href="./?page=contact" style="color:#5E6B2A">Contact</a> · <a href="https://github.com/Black-Butterfly-Codes/RHYTHM" style="color:#5E6B2A">Source code</a></p>
+      <p style="font-size:15px;color:#514969">RHYTHM is a prototype for users aged 13+. Under-18 accounts need parent/guardian consent. No real payments are processed. See the policy pages for details and owner placeholders.</p>
     </main>
   </noscript>
 

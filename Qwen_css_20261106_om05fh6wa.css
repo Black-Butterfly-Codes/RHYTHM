@@ -1,0 +1,58 @@
+:root {
+  /* Color Tokens */
+  --ink: #1B1530;
+  --paper: #F6F3EC;
+  --peach: #FFB48A;
+  --pink: #F0509B;
+  --lime: #D6EBA6;
+  --olive: #5E6B2A;
+  --pixel-green: #2FD14B;
+
+  /* Typography */
+  --font-display: 'Pixelify Sans', cursive;
+  --font-body: 'DM Sans', sans-serif;
+
+  /* Radii & Spacing */
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --radius-pill: 999px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 48px;
+
+  /* Hard Shadows (No Blur) */
+  --shadow-sm: 2px 2px 0 var(--ink);
+  --shadow-md: 4px 4px 0 var(--ink);
+  --shadow-lg: 6px 6px 0 var(--ink);
+}
+
+/* Dark Mode: Swap paper and ink, keep accents */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #1B1530;
+    --ink: #F6F3EC;
+  }
+}
+
+/* Base Reset */
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  line-height: 1.2;
+  margin: 0 0 var(--space-md);
+}
+
+/* Respect Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

@@ -1,0 +1,197 @@
+/* ═══════════════════════════════════════════════════════════════════
+   RHYTHM · Design tokens
+   ───────────────────────────────────────────────────────────────────
+   Flat, outlined, printed-poster style. One source of truth for colour,
+   type, radii, hard shadows and spacing. No gradients, no blur, no glow.
+
+   Tokens are intentionally limited to the seven owner-approved colours
+   plus solid tints created by mixing them at full opacity. Nothing here
+   uses transparency or filters.
+
+   Dark mode simply swaps --paper and --ink (and the surfaces derived
+   from them); accents stay exactly the same.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ---------- Self-hosted fonts (OFL-1.1, see LICENSES.md) ---------- */
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./assets/fonts/dmsans-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./assets/fonts/dmsans-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Pixelify Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./assets/fonts/pixelify-sans-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Pixelify Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./assets/fonts/pixelify-sans-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ---------- Palette + semantic tokens (light) ---------- */
+:root {
+  /* The exact seven approved colours. */
+  --ink: #1b1530;
+  --paper: #f6f3ec;
+  --peach: #ffb48a;
+  --pink: #f0509b;
+  --lime: #d6eba6;
+  --olive: #5e6b2a;
+  --pixel-green: #2fd14b;
+
+  /* Solid neutrals derived from paper/ink (never translucent). */
+  --paper-2: #ece6d8;
+  --paper-3: #e0d8c6;
+  --white: #ffffff;
+  --muted-ink: #514969;
+
+  /* Semantic surfaces — swapped wholesale in dark mode. */
+  --bg: var(--paper);
+  --fg: var(--ink);
+  --card: var(--white);
+  --card-2: var(--paper-2);
+  --line: var(--ink);
+  --muted: var(--muted-ink);
+  --surface-dark: var(--ink);
+  --on-dark: var(--paper);
+
+  /* Accent-on-surface text colours that keep 4.5:1 contrast. */
+  --accent-fill: var(--peach);     /* primary button fill, ink text */
+  --accent-ink: var(--ink);        /* text that sits on peach/pink/lime */
+  --hero-fill: var(--pink);        /* hero blocks, ink text */
+  --soft-fill: var(--lime);        /* soft cards, success, ink text */
+  --secondary-fill: var(--olive);  /* tertiary button fill, paper text */
+  --secondary-ink: var(--paper);
+
+  /* Compatibility aliases used by a few inline styles in app.js. */
+  --cy: var(--olive);
+  --inv: var(--ink);
+  --warn: var(--olive);
+
+  /* Type */
+  --font-display: "Pixelify Sans", "Silkscreen", "Courier New", monospace;
+  --font-body: "DM Sans", "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --fs-xs: 0.875rem;   /* 14px — smallest allowed */
+  --fs-sm: 0.9375rem;  /* 15px */
+  --fs-base: 1rem;     /* 16px body minimum */
+  --fs-md: 1.125rem;   /* 18px */
+  --fs-lg: 1.375rem;   /* 22px */
+  --fs-xl: 1.75rem;    /* 28px */
+  --fs-2xl: 2.25rem;   /* 36px */
+  --fs-3xl: 3rem;      /* 48px */
+  --lh: 1.5;
+  --lh-tight: 1.2;
+
+  /* Radii — cards 16–24px, controls fully rounded. */
+  --r-xs: 10px;
+  --r-sm: 14px;
+  --r-md: 18px;
+  --r-lg: 22px;
+  --r-xl: 28px;
+  --r-pill: 999px;
+  --r-circle: 50%;
+
+  /* Hard offset shadows only — no blur, ever. */
+  --shadow-xs: 2px 2px 0 var(--line);
+  --shadow-sm: 3px 3px 0 var(--line);
+  --shadow: 4px 4px 0 var(--line);
+  --shadow-lg: 6px 6px 0 var(--line);
+  --shadow-press: 1px 1px 0 var(--line);
+
+  /* Spacing scale */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+  --sp-7: 3rem;
+  --sp-8: 4rem;
+  --sp-9: 6rem;
+
+  /* Outlines */
+  --bw: 2px;
+  --bw-thick: 3px;
+
+  /* Motion — short, never pulsing/glowing/shimmering. */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 120ms;
+
+  color-scheme: light;
+}
+
+/* ---------- Dark mode: swap paper and ink, keep accents ---------- */
+:root[data-theme="dark"] {
+  --bg: var(--ink);
+  --fg: var(--paper);
+  --card: #251e42;
+  --card-2: #2e2650;
+  --line: var(--paper);
+  --muted: #c9c1d8;
+  --surface-dark: #120e22;
+  --on-dark: var(--paper);
+
+  --accent-fill: var(--peach);
+  --accent-ink: var(--ink);
+  --hero-fill: var(--pink);
+  --soft-fill: var(--lime);
+  --secondary-fill: var(--lime); /* olive needs a light fill on dark */
+  --secondary-ink: var(--ink);
+
+  --paper-2: #2e2650;
+  --paper-3: #3a3163;
+  --white: #251e42;
+  --muted-ink: #c9c1d8;
+  --cy: var(--lime);
+  --warn: var(--lime);
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: var(--ink);
+    --fg: var(--paper);
+    --card: #251e42;
+    --card-2: #2e2650;
+    --line: var(--paper);
+    --muted: #c9c1d8;
+    --surface-dark: #120e22;
+    --on-dark: var(--paper);
+    --secondary-fill: var(--lime);
+    --secondary-ink: var(--ink);
+    --paper-2: #2e2650;
+    --paper-3: #3a3163;
+    --white: #251e42;
+    --muted-ink: #c9c1d8;
+    --cy: var(--lime);
+    --warn: var(--lime);
+    color-scheme: dark;
+  }
+}

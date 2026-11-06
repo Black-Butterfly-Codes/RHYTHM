@@ -46,6 +46,8 @@ function migrate() {
   DB.notifications = arr(DB.notifications);
   DB.reports = arr(DB.reports);
   DB.transactions = arr(DB.transactions);
+  DB.blocks = arr(DB.blocks).filter((b) => b && b.by && b.targetId && b.by !== b.targetId);
+  DB.moderationLog = arr(DB.moderationLog).filter((l) => l && l.id);
 
   const userIds = new Set(DB.users.filter((u) => u && u.id).map((u) => u.id));
   const postIds = new Set(DB.posts.filter((p) => p && p.id).map((p) => p.id));
@@ -239,25 +241,57 @@ function timeAgo(ts) {
   if (d < 30 * DAY) return Math.floor(d / DAY) + "d ago";
   return new Date(ts).toLocaleDateString();
 }
+function hashStr(s) {
+  let h = 0;
+  for (const c of String(s || "?")) h = (h * 31 + c.charCodeAt(0)) % 100000;
+  return h;
+}
+const FLAT_FILLS = ["#FFB48A", "#D6EBA6", "#F0509B"];
+/** Flat solid fill from the approved palette. No gradients, ever. */
 function avaColor(name) {
-  let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return `linear-gradient(135deg,hsl(${h},70%,60%),hsl(${(h + 60) % 360},70%,50%))`;
+  return FLAT_FILLS[hashStr(name) % FLAT_FILLS.length];
 }
 function ava(name, sz) {
   const label = "Avatar of " + (name || "deleted user");
   return `<div class="avatar" role="img" aria-label="${esc(label)}" style="background:${avaColor(name || "?")};${sz ? `width:${sz}px;height:${sz}px;` : ""}">${esc((name || "?").trim()[0].toUpperCase())}</div>`;
 }
-// ---- premium helpers (views only; logic untouched) ----
+// ---- flat visual helpers (views only; logic untouched) ----
 const DOMAIN_EMOJI = { singer: "🎤", instrumentalist: "🎸", lyricist: "✍️", composer: "🎼", beatmaker: "🥁" };
 function artStyle(seedStr) {
-  let h = 0; const s = String(seedStr || "?");
-  for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return `background:linear-gradient(135deg,hsl(${h},80%,48%),hsl(${(h + 70) % 360},85%,33%),hsl(${(h + 140) % 360},90%,26%))`;
+  const fills = ["#FFB48A", "#D6EBA6", "#F0509B", "#FFB48A"];
+  return `background:${fills[hashStr(seedStr) % fills.length]}`;
 }
 function artHtml(p) {
   const label = "Artwork for " + (p.title || DOMAIN_LABEL[p.domain] || "track");
   return `<div class="art" role="img" aria-label="${esc(label)}" style="${artStyle(p.audioSeed || p.id)}"><span class="em" aria-hidden="true">${DOMAIN_EMOJI[p.domain] || "🎵"}</span></div>`;
 }
+/** Small original flat doodles, drawn inline. Never placed behind text. */
+function doodle(kind, extra) {
+  const cls = "doodle doodle-" + (kind || "star") + (extra ? " " + extra : "");
+  const shapes = {
+    star: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5l2.6 6.2 6.7.5-5.1 4.3 1.6 6.5L12 15.4 6.2 19l1.6-6.5L2.7 8.2l6.7-.5z" fill="currentColor" stroke="#1B1530" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
+    heart: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21S3 14.7 3 8.6A4.6 4.6 0 0112 6a4.6 4.6 0 019 2.6C21 14.7 12 21 12 21z" fill="currentColor" stroke="#1B1530" stroke-width="1.6"/></svg>`,
+    flower: `<svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor" stroke="#1B1530" stroke-width="1.4"><circle cx="12" cy="4.5" r="3"/><circle cx="19.5" cy="12" r="3"/><circle cx="12" cy="19.5" r="3"/><circle cx="4.5" cy="12" r="3"/></g><circle cx="12" cy="12" r="2.6" fill="#FFB48A" stroke="#1B1530" stroke-width="1.4"/></svg>`,
+    cloud: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18a4 4 0 010-8 6 6 0 0111.4-1A4.5 4.5 0 0118 18z" fill="currentColor" stroke="#1B1530" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
+    note: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l9-2v12" fill="none" stroke="#1B1530" stroke-width="2"/><ellipse cx="7" cy="18" rx="3.2" ry="2.4" fill="currentColor" stroke="#1B1530" stroke-width="1.4"/><ellipse cx="16" cy="16" rx="3.2" ry="2.4" fill="currentColor" stroke="#1B1530" stroke-width="1.4"/></svg>`,
+  };
+  return `<span class="${cls}" aria-hidden="true">${shapes[kind] || shapes.star}</span>`;
+}
+function emptyState(text) {
+  return `<div class="emptyState">${doodle("flower")}<p>${esc(text)}</p></div>`;
+}
+function policyNoticeHtml() {
+  const u = me();
+  if (!u) return "";
+  if (!u.termsVersion || u.termsVersion === "legacy") return "";
+  if (u.termsVersion === TERMS_VERSION && u.privacyVersion === PRIVACY_VERSION) return "";
+  return `<div class="notice" role="status">
+    <span class="grow"><b>Our policies changed.</b> Please review the updated Terms, Privacy Policy and Cookie Policy (version ${esc(POLICY_VERSION)}). You can keep using the prototype while you read them.</span>
+    <button type="button" class="btn small" onclick="R.nav('terms')">Read Terms</button>
+    <button type="button" class="btn small ghost" onclick="R.acceptPolicies()">I accept</button>
+  </div>`;
+}
+
 function followersOf(id) { return DB.users.filter((u) => (u.following || []).includes(id)).length; }
 function fmtT(s) { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
 function completion(u) {
@@ -295,12 +329,19 @@ const LEGAL_ADDRESS = "";        // TODO(owner): registered address
 const LEGAL_EMAIL = "";          // TODO(owner): privacy & grievance inbox
 const GRIEVANCE_OFFICER = "";    // TODO(owner): name, designation and contact
 const GOVERNING_LAW = "India";   // TODO(owner): governing law / courts if not India
+const GSTIN = "";                // TODO(owner): GSTIN if goods/services are sold
+const SELLER_DETAILS = "";       // TODO(owner): legal seller name, address, contact
 const POLICY_VERSION = "2026-11-06";
+const POLICY_HISTORY = [
+  { version: "2026-11-06", date: "6 November 2026", note: "First public prototype policy set, including cookies, community guidelines and data-rights settings." },
+];
 const TERMS_VERSION = POLICY_VERSION;
 const PRIVACY_VERSION = POLICY_VERSION;
+const COOKIE_VERSION = POLICY_VERSION;
 const CONSENT_KEY = "rhythm_consent_v1";
-const CONSENT_VERSION = 1;
-const PUBLIC_PAGES = ["privacy", "terms", "refund", "disclaimer", "copyright", "contact"];
+const CONSENT_VERSION = 2;
+const THEME_KEY = "rhythm_theme_v1";
+const PUBLIC_PAGES = ["privacy", "terms", "refund", "disclaimer", "copyright", "contact", "cookie", "guidelines"];
 const REPORT_REASONS = [
   "Copyright / plagiarism",
   "Child safety / sexual content involving a minor",
@@ -309,7 +350,35 @@ const REPORT_REASONS = [
   "Impersonation",
   "Offensive content",
   "Spam / scam",
+  "AI-generated content not labelled",
   "Other",
+];
+// Retention periods that the prototype actually enforces at boot (see
+// applyRetention()). Production periods must be reviewed by the owner/lawyer.
+const RETENTION = {
+  notificationsDays: 180,
+  resolvedReportsDays: 365,
+  moderationLogDays: 730,
+  loginLockMinutes: 1,
+  consentHistoryEntries: 20,
+};
+const RETENTION_TABLE = [
+  ["Account & profile", "Kept while the account is active. Deleted from this browser immediately on account deletion; production target: within 30 days, and from backups within 90 days."],
+  ["Your content (posts, comments, chats, listings)", "Kept until you delete it or delete your account. Removed from this browser immediately on deletion."],
+  ["Votes, follows, favourites", "Kept while the account is active; removed when the account is deleted or the post is removed."],
+  ["Notifications", "Auto-deleted after 180 days (enforced at app start)."],
+  ["Open reports & moderation records", "Open reports kept until resolved. Resolved reports auto-deleted after 365 days; the moderation log after 730 days."],
+  ["Login rate-limit record", "Cleared on a successful sign-in and after the 60-second lock expires."],
+  ["Consent record", "Kept while consent is needed as proof; the newest 20 changes are retained."],
+  ["Analytics (optional)", "No analytics request is made unless you consent and an owner configures GA4. Retention then follows the GA4 property setting."],
+  ["Contact messages", "The prototype opens your email app and does not store the message. Production inbox retention is an owner TODO."],
+];
+const THIRD_PARTIES = [
+  ["Hosting (production)", "Static host such as Netlify", "Serves the app and logs standard request data. Not configured to receive account content in this prototype.", "Owner TODO: confirm provider, region and data-processing agreement."],
+  ["Analytics (optional)", "Google Analytics 4", "Screen-view events and a truncated/coarsened IP address, only after you accept analytics and the owner configures a measurement ID.", "Disabled by default. Cross-border transfer possible."],
+  ["Payments (production)", "Certified payment gateway", "Payment and tax data when real checkout is enabled. This prototype takes no payment and stores no card data.", "Owner TODO: choose gateway and publish its privacy terms."],
+  ["Email (production)", "Transactional email provider", "Account, consent and receipt emails in production.", "Owner TODO: choose provider."],
+  ["AI tools", "None currently", "The prototype sends no personal data to any AI API.", "If AI features are added, disclose the provider and obtain consent first."],
 ];
 
 function supportEmail() { return CONTACT_EMAIL || LEGAL_EMAIL; }
@@ -318,6 +387,8 @@ function legalEntity() { return shown(LEGAL_ENTITY, "LEGAL ENTITY / OWNER NAME")
 function legalAddress() { return shown(LEGAL_ADDRESS, "REGISTERED ADDRESS"); }
 function legalEmail() { return shown(supportEmail(), "PRIVACY / GRIEVANCE EMAIL"); }
 function grievanceOfficer() { return shown(GRIEVANCE_OFFICER, "GRIEVANCE OFFICER NAME & CONTACT"); }
+function gstin() { return shown(GSTIN, "GSTIN (IF SELLING GOODS/SERVICES)"); }
+function sellerDetails() { return shown(SELLER_DETAILS, "SELLER LEGAL NAME, ADDRESS & CONTACT"); }
 function legalReady() { return Boolean(LEGAL_ENTITY && LEGAL_ADDRESS && supportEmail()); }
 function emailLink() {
   const e = supportEmail();
@@ -326,32 +397,51 @@ function emailLink() {
 function getConsent() {
   try {
     const rec = JSON.parse(localStorage.getItem(CONSENT_KEY) || "null");
-    if (!rec || rec.version !== CONSENT_VERSION || typeof rec.analytics !== "boolean") return null;
+    if (!rec || rec.version !== CONSENT_VERSION || typeof rec.analytics !== "boolean" || typeof rec.marketing !== "boolean") return null;
     return rec;
   } catch (e) { return null; }
 }
-function setConsentRecord(analytics) {
-  const rec = { version: CONSENT_VERSION, analytics: Boolean(analytics), decidedAt: Date.now() };
+/** Store a dated consent record plus a bounded history of changes. */
+function setConsentRecord(analytics, marketing, action) {
+  const prev = getConsent();
+  const history = (prev && Array.isArray(prev.history) ? prev.history : []).slice(-(RETENTION.consentHistoryEntries - 1));
+  history.push({
+    at: Date.now(), action: action || "update",
+    analytics: Boolean(analytics), marketing: Boolean(marketing),
+    consentVersion: CONSENT_VERSION, policyVersion: POLICY_VERSION,
+  });
+  const rec = {
+    version: CONSENT_VERSION, policyVersion: POLICY_VERSION,
+    analytics: Boolean(analytics), marketing: Boolean(marketing),
+    decidedAt: Date.now(), history,
+  };
   try { localStorage.setItem(CONSENT_KEY, JSON.stringify(rec)); } catch (e) { /* storage may be blocked */ }
   CONSENT_PROMPT = false;
   setAnalyticsConsent(rec.analytics);
   if (rec.analytics) initAnalytics();
   render();
-  toast(rec.analytics ? "Analytics allowed. You can change this any time." : "Optional analytics rejected. Essential storage only.");
+  const parts = [rec.analytics ? "analytics on" : "analytics off", rec.marketing ? "marketing on" : "marketing off"];
+  toast("Preferences saved: " + parts.join(" · ") + ".");
 }
 function consentBannerHtml() {
   if (MODAL) return "";
   if (getConsent() && !CONSENT_PROMPT) return "";
   return `<div class="consentBanner" role="region" aria-label="Privacy and analytics consent">
-    <p><b>Your privacy choice.</b> Essential local storage signs you in and saves your work. Optional analytics is <b>off</b> unless you accept it. <button type="button" class="lnk" onclick="R.nav('privacy')">Privacy Policy</button> · <button type="button" class="lnk" onclick="R.nav('terms')">Terms</button></p>
+    <p><b>Your privacy choice.</b> Essential local storage signs you in and saves your work. Optional analytics and optional marketing messages are <b>off</b> unless you switch them on. <button type="button" class="lnk" onclick="R.nav('privacy')">Privacy Policy</button> · <button type="button" class="lnk" onclick="R.nav('cookie')">Cookie Policy</button></p>
     <div class="cBtns">
       <button type="button" class="btn-reject" onclick="R.rejectAnalytics()">Reject optional</button>
+      <button type="button" class="btn-reject" onclick="R.openConsentSettings()">Manage preferences</button>
       <button type="button" class="btn-accept" onclick="R.acceptAnalytics()">Accept analytics</button>
     </div>
   </div>`;
 }
 function minorNeedsConsent(u) {
   return Boolean(u && u.minor && (!u.parentalConsent || u.parentalConsent.status !== "verified"));
+}
+function policyHistoryHtml() {
+  return `<details class="policy"><summary><b>Policy versions</b> (current: ${esc(POLICY_VERSION)})</summary>
+    <ul class="small policyList">${POLICY_HISTORY.map((h) => `<li><b>${esc(h.version)}</b> — ${esc(h.date)}. ${esc(h.note)} Archived copies: <button type="button" class="lnk" onclick="R.nav('contact')">request a copy</button> or see <code>policies/</code> in the repository.</li>`).join("")}</ul>
+    <p class="small dim">Material changes are announced in the app and, where required, by email. Continued use after the effective date means you accept the updated policy.</p></details>`;
 }
 
 // ---- SEO: per-screen titles/descriptions, canonical, robots, hash routes ----

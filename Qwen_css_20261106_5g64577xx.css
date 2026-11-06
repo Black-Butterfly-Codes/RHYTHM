@@ -1,0 +1,69 @@
+/* Glass Cards with Solid Fallback */
+.glass-card {
+  background: var(--glass-fill);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-card);
+  padding: 24px;
+  position: relative;
+  z-index: 1;
+}
+
+/* Fallback for browsers without backdrop-filter support */
+@supports not (backdrop-filter: blur(16px)) {
+  .glass-card {
+    background: var(--bg-surface);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+}
+
+/* Pill Navigation */
+.pill-nav {
+  background: var(--glass-fill);
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-pill);
+  padding: 8px 12px;
+  display: inline-flex;
+  gap: 8px;
+  margin: 24px auto;
+}
+.pill-nav a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: 10px 20px;
+  border-radius: var(--radius-pill);
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+.pill-nav a.active {
+  background: rgba(139, 92, 246, 0.15);
+  color: var(--accent-violet);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+/* Buttons */
+.btn-primary {
+  background: var(--accent-violet);
+  color: white;
+  border: none;
+  padding: 14px 28px;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-outline {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--glass-border);
+  padding: 14px 28px;
+  border-radius: var(--radius-pill);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* Controlled Glow Classes (Applied sparingly) */
+.glow-violet { box-shadow: 0 0 30px rgba(139, 92, 246, 0.4); }
+.glow-magenta { box-shadow: 0 0 20px rgba(217, 70, 239, 0.3); }

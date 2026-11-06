@@ -1,0 +1,95 @@
+/* Buttons */
+.btn {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 16px;
+  padding: 12px 24px;
+  border: 2px solid var(--ink);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-md);
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  text-decoration: none;
+  color: var(--ink);
+  background: var(--paper);
+}
+.btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.btn:focus-visible {
+  outline: 3px solid var(--pink);
+  outline-offset: 2px;
+}
+.btn-primary { background: var(--peach); }
+.btn-tertiary { background: var(--olive); color: var(--paper); }
+.btn-danger { background: var(--ink); color: var(--paper); }
+
+/* Cards */
+.card {
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-lg);
+  position: relative;
+}
+
+/* Inputs */
+.input {
+  font-family: var(--font-body);
+  font-size: 16px;
+  padding: 12px 16px;
+  border: 2px solid var(--ink);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  color: var(--ink);
+  width: 100%;
+  min-height: 48px;
+  box-sizing: border-box;
+}
+.input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--pink);
+}
+
+/* Avatars */
+.avatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 3px solid var(--ink);
+  background: var(--peach);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 32px;
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--ink);
+  font-weight: 700;
+  font-size: 14px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.chip-active { background: var(--ink); color: var(--paper); }
+.chip-success { background: var(--lime); }
+
+/* Section Dividers (SVG based) */
+.divider-pixel svg, .divider-blob svg {
+  width: 100%;
+  display: block;
+}
